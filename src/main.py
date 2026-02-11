@@ -67,15 +67,23 @@ def setup_logging(log_format: str = "text") -> logging.Logger:
 
 
 def load_settings() -> dict:
-    with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+    with open(SETTINGS_PATH, "r", encoding="utf-8-sig") as f:
         return json.load(f)
 
 
+def _norm_key(value: str) -> str:
+    return str(value).strip().lower().replace(" ", "")
+
+
 def _pick(row: dict, keys: List[str]) -> str:
+    normalized = {_norm_key(k): v for k, v in row.items()}
     for key in keys:
-        value = row.get(key)
-        if value is not None and str(value).strip():
-            return str(value).strip()
+        direct = row.get(key)
+        if direct is not None and str(direct).strip():
+            return str(direct).strip()
+        alt = normalized.get(_norm_key(key))
+        if alt is not None and str(alt).strip():
+            return str(alt).strip()
     return ""
 
 
@@ -88,13 +96,38 @@ def load_leads(path: str) -> List[dict]:
     with open(path, "r", encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
+            original_url = _pick(
+                row,
+                [
+                    "url(旧)",
+                    "url（旧）",
+                    "url旧",
+                    "url(old)",
+                    "URL",
+                    "old_url",
+                    "url",
+                    "website",
+                ],
+            )
             lead = {
                 "id": _pick(row, ["id", "ID"]),
-                "salon_name": _pick(row, ["店名", "salon_name", "name", "サロン名"]),
-                "url": _pick(row, ["url(旧)", "url", "website"]),
-                "demo_url": _pick(row, ["url(デモ)", "demo_url"]),
+                "salon_name": _pick(row, ["店名", "名称", "サロン名", "salon_name", "name"]),
+                "url": original_url,
+                "original_url": original_url,
+                "demo_url": _pick(
+                    row,
+                    [
+                        "url(デモ)",
+                        "url(デモページ)",
+                        "url（デモページ）",
+                        "url（デモ）",
+                        "urlデモ",
+                        "demo_url",
+                        "demo",
+                    ],
+                ),
             }
-            if lead["id"] and lead["url"]:
+            if lead["id"] and lead["salon_name"] and lead["url"]:
                 leads.append(lead)
     logging.info(f"[MAIN] loaded leads: {len(leads)}")
     return leads
@@ -342,6 +375,12 @@ async def process_lead(
             seq += 1
             await take_screenshot(page, lead_id, seq, "before_fill", date_str)
 
+        resolved = message_gen.resolve_lead_fields(lead)
+        salon_name = resolved.get("salon_name") or salon_name
+        demo_url = resolved.get("demo_url") or demo_url
+        if mode == "SEMI_AUTO":
+            logger.info(f"Resolved lead: id={lead_id}, salon_name={salon_name}, demo_url={demo_url}")
+
         message = message_gen.generate(salon_name, demo_url)
         subject = message_gen.generate_subject(salon_name)
         fill_ok, fill_stats = await detector.fill_form(fields, message, subject)
@@ -414,6 +453,9 @@ async def process_lead(
                 if settings.get("screenshot_enabled", True):
                     seq += 1
                     await take_screenshot(page, lead_id, seq, "on_confirmation_page", date_str)
+                logger.info(f"[{lead_id}] SEMI_AUTO: stopped on confirmation page")
+            else:
+                logger.info(f"[{lead_id}] SEMI_AUTO: stopped before submit")
 
             result["status"] = "prepared"
             result["message"] = "prepared"
@@ -558,7 +600,12 @@ async def run(settings_override: Optional[dict] = None) -> Dict:
 
     to_process = unprocessed[: rate_limiter.remaining()]
     domain_tracker = DomainAttemptTracker(max_per_day=int(settings.get("max_attempts_per_domain_per_day", 2)))
-    message_gen = MessageGenerator(TEMPLATE_PATH, SENDER_INFO_PATH)
+    message_gen = MessageGenerator(
+        TEMPLATE_PATH,
+        SENDER_INFO_PATH,
+        wrap_message=bool(settings.get("wrap_message", True)),
+        wrap_width=int(settings.get("wrap_width", 56)),
+    )
 
     results: List[dict] = []
     stats = {"total": 0, "sent": 0, "prepared": 0, "failed": 0, "skipped": 0}

@@ -9,3 +9,12 @@ Call log:
 2026-02-11 14:29:34,SEMI_AUTO,9904,LocalTest4,127.0.0.1:8767,http://127.0.0.1:8767/contact,http://127.0.0.1:8767/contact/,prepared,semi_auto_prepared
 2026-02-11 14:39:03,SEMI_AUTO,21001,モックサロンA,127.0.0.1:5000,http://127.0.0.1:5000/contact,http://127.0.0.1:5000/confirm,prepared,semi_auto_prepared
 2026-02-11 14:39:13,SEMI_AUTO,21002,モックサロンB,127.0.0.1:5000,http://127.0.0.1:5000/contact,http://127.0.0.1:5000/confirm,prepared,semi_auto_prepared
+2026-02-11 14:57:13,SEMI_AUTO,22001,Mock Salon A,127.0.0.1:5000,http://127.0.0.1:5000/contact_single,http://127.0.0.1:5000/confirm/single,prepared,semi_auto_prepared
+2026-02-11 14:57:47,SEMI_AUTO,22002,Mock Salon B,127.0.0.1:5000,http://127.0.0.1:5000/contact_split,http://127.0.0.1:5000/confirm/split,prepared,semi_auto_prepared
+2026-02-11 14:59:07,SEMI_AUTO,22003,Mock Salon C,127.0.0.1:5000,http://127.0.0.1:5000/contact_single,http://127.0.0.1:5000/confirm/single,prepared,semi_auto_prepared
+2026-02-11 14:59:17,SEMI_AUTO,22004,Mock Salon D,127.0.0.1:5000,http://127.0.0.1:5000/contact_split,http://127.0.0.1:5000/confirm/split,prepared,semi_auto_prepared
+2026-02-11 15:01:11,SEMI_AUTO,22005,Mock Salon E,127.0.0.1:5000,http://127.0.0.1:5000/contact_single,http://127.0.0.1:5000/confirm/single,prepared,semi_auto_prepared
+2026-02-11 15:01:21,SEMI_AUTO,22006,Mock Salon F,127.0.0.1:5000,http://127.0.0.1:5000/contact_split,http://127.0.0.1:5000/confirm/split,prepared,semi_auto_prepared
+2026-02-11 15:02:11,SEMI_AUTO,22007,Mock Salon G,127.0.0.1:5000,http://127.0.0.1:5000/contact_single,http://127.0.0.1:5000/confirm/single,prepared,semi_auto_prepared
+2026-02-11 15:02:21,SEMI_AUTO,22008,Mock Salon H,127.0.0.1:5000,http://127.0.0.1:5000/contact_split,http://127.0.0.1:5000/confirm/split,prepared,semi_auto_prepared
+2026-02-11 15:25:48,SEMI_AUTO,99001,ハーベア（フィトセラピーサロン）,127.0.0.1:5000,http://127.0.0.1:5000/contact_single,http://127.0.0.1:5000/confirm/single,prepared,semi_auto_prepared

@@ -2,7 +2,9 @@
   "mode": "SEMI_AUTO",
   "stop": false,
   "dry_run": false,
-  "daily_limit": 2,
+  "wrap_message": true,
+  "wrap_width": 56,
+  "daily_limit": 1,
   "min_delay_sec": 1,
   "max_delay_sec": 2,
   "cooldown_on_error_min_sec": 30,
@@ -28,6 +30,7 @@
     "/contact",
     "/inquiry",
     "/お問い合わせ",
+    "/お問合せ",
     "/otoiawase",
     "/mail",
     "/form",
@@ -39,5 +42,5 @@
     "viewport_height": 720,
     "locale": "ja-JP"
   },
-  "leads_csv_path": "data/leads_test.csv"
+  "leads_csv_path": "data/leads.csv"
 }

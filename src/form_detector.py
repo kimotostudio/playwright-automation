@@ -1,24 +1,24 @@
-"""Form detection and auto-fill for Japanese salon contact pages.
+﻿"""Form detection and auto-fill for Japanese contact forms.
 
-Supports: Jimdo, Wix, Peraichi, Ameba Ownd, generic HTML forms.
-Enhanced with: split name fields, dropdown handling, aria-label, form_map logging.
+Implements robust selector strategies and safe SEMI_AUTO behavior support.
 """
 
+from __future__ import annotations
+
 import asyncio
-import json
 import logging
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Optional, Tuple
 from urllib.parse import urljoin
 
-from playwright.async_api import Page, Locator, TimeoutError as PlaywrightTimeout
+from playwright.async_api import Locator, Page, TimeoutError as PlaywrightTimeout
 
 logger = logging.getLogger(__name__)
 
-# Patterns for finding contact pages
 CONTACT_PATH_PATTERNS = [
     "/contact",
     "/inquiry",
     "/お問い合わせ",
+    "/お問合せ",
     "/otoiawase",
     "/mail",
     "/form",
@@ -26,11 +26,8 @@ CONTACT_PATH_PATTERNS = [
     "/contact-us",
     "/enquiry",
     "/toiawase",
-    "/soudan",
-    "/相談",
 ]
 
-# Link text patterns for finding contact page links
 CONTACT_LINK_TEXTS = [
     "お問い合わせ",
     "お問合せ",
@@ -41,603 +38,661 @@ CONTACT_LINK_TEXTS = [
     "Contact",
     "CONTACT",
     "メールフォーム",
-    "お気軽に",
-    "ご連絡",
 ]
 
-# Expanded field detection patterns (追い②)
+# Name filling policy
+DISPLAY_NAME = "KIMOTO STUDIO"
+SURNAME = "木許"
+GIVEN_NAME = "裕輔"
+COMPANY_NAME = "KIMOTO STUDIO"
+FURIGANA_SEI = "キモト"
+FURIGANA_MEI = "ユウスケ"
+
+REQUIRED_MARKERS = ("必須", "*", "＊")
+
 FIELD_PATTERNS = {
     "name": {
-        "labels": [
-            "お名前", "名前", "氏名", "ご氏名", "name", "Name", "NAME",
-            "お客様名", "ご担当者名", "ご氏名（フルネーム）", "お名前（フルネーム）",
-        ],
-        "attributes": [
-            "name", "your-name", "customer-name", "fullname", "your_name",
-            "field-name", "contact-name", "氏名", "onamae",
-        ],
-        "placeholders": [
-            "お名前", "名前", "氏名", "Your Name", "例）山田太郎",
-            "例：山田太郎", "フルネーム",
-        ],
+        "labels": ["お名前", "氏名", "ご氏名", "名前", "Name", "name"],
+        "attributes": ["name", "your-name", "customer-name", "fullname", "your_name", "onamae"],
+        "placeholders": ["お名前", "氏名", "Name", "フルネーム"],
     },
     "name_sei": {
-        "labels": ["姓", "苗字", "名字", "Last Name", "last name"],
-        "attributes": ["sei", "last-name", "lastname", "family-name", "name_sei", "your-sei"],
-        "placeholders": ["姓", "例）山田", "苗字"],
+        "labels": ["姓", "氏", "苗字", "Last Name", "last name", "Family Name"],
+        "attributes": ["sei", "last-name", "lastname", "family-name", "name_sei", "surname"],
+        "placeholders": ["姓", "氏", "苗字"],
     },
     "name_mei": {
-        "labels": ["名", "First Name", "first name"],
-        "attributes": ["mei", "first-name", "firstname", "given-name", "name_mei", "your-mei"],
-        "placeholders": ["名", "例）太郎"],
+        "labels": ["名", "First Name", "first name", "Given Name"],
+        "attributes": ["mei", "first-name", "firstname", "given-name", "name_mei"],
+        "placeholders": ["名"],
+    },
+    "furigana": {
+        "labels": ["フリガナ", "ふりがな", "カナ", "お名前(カナ)", "氏名(カナ)"],
+        "attributes": ["furigana", "kana", "name-kana", "name_kana"],
+        "placeholders": ["フリガナ", "ふりがな", "カナ"],
+    },
+    "furigana_sei": {
+        "labels": ["セイ", "姓フリガナ", "氏フリガナ", "姓(カナ)", "Last Name Kana"],
+        "attributes": ["sei-kana", "last-kana", "surname-kana", "kana_sei", "furigana_sei"],
+        "placeholders": ["セイ", "姓フリガナ"],
+    },
+    "furigana_mei": {
+        "labels": ["メイ", "名フリガナ", "名(カナ)", "First Name Kana"],
+        "attributes": ["mei-kana", "first-kana", "given-kana", "kana_mei", "furigana_mei"],
+        "placeholders": ["メイ", "名フリガナ"],
     },
     "email": {
-        "labels": [
-            "メールアドレス", "メール", "email", "Email", "E-mail", "e-mail",
-            "Eメール", "ご連絡先メール", "E-MAIL", "連絡先メール",
-        ],
-        "attributes": [
-            "email", "your-email", "mail", "e-mail", "your_email",
-            "contact-email", "field-email",
-        ],
-        "placeholders": [
-            "メールアドレス", "example@example.com", "email", "Email",
-            "例）example@example.com", "メール",
-        ],
+        "labels": ["メール", "メールアドレス", "E-mail", "e-mail", "Email", "email"],
+        "attributes": ["email", "your-email", "mail", "e-mail", "your_email"],
+        "placeholders": ["メールアドレス", "example@example.com", "Email", "email"],
     },
     "phone": {
-        "labels": [
-            "電話番号", "電話", "TEL", "tel", "お電話", "ご連絡先",
-            "携帯", "携帯番号", "連絡先電話番号", "TEL（携帯）",
-        ],
-        "attributes": [
-            "tel", "phone", "telephone", "your-tel", "your_phone",
-            "mobile", "contact-phone", "携帯",
-        ],
-        "placeholders": [
-            "電話番号", "090-1234-5678", "TEL", "ハイフンなし",
-            "例）09012345678", "携帯番号",
-        ],
+        "labels": ["電話", "TEL", "tel", "携帯", "連絡先", "電話番号"],
+        "attributes": ["tel", "phone", "telephone", "your-tel", "your_phone", "mobile"],
+        "placeholders": ["電話番号", "090-1234-5678", "TEL", "携帯"],
     },
     "subject": {
-        "labels": ["件名", "タイトル", "subject", "Subject", "ご用件", "お問い合わせ種類"],
-        "attributes": ["subject", "your-subject", "title", "件名"],
-        "placeholders": ["件名", "Subject", "ご用件"],
+        "labels": ["件名", "タイトル", "subject", "Subject", "お問い合わせ種別"],
+        "attributes": ["subject", "your-subject", "title"],
+        "placeholders": ["件名", "Subject"],
     },
     "message": {
         "labels": [
-            "お問い合わせ内容", "メッセージ", "内容", "本文", "message", "Message",
-            "ご相談内容", "備考", "お問合せ内容", "ご質問・ご要望",
-            "ご用件の詳細", "詳細", "お問い合わせ", "ご質問内容",
+            "お問い合わせ内容",
+            "ご相談内容",
+            "内容",
+            "メッセージ",
+            "本文",
+            "message",
+            "Message",
         ],
-        "attributes": [
-            "message", "your-message", "content", "body", "inquiry",
-            "your_message", "comment", "remarks", "naiyo",
-        ],
-        "placeholders": [
-            "お問い合わせ内容", "メッセージ", "ご自由にお書きください", "Message",
-            "こちらにご記入ください", "お問い合わせ内容をご記入ください",
-        ],
+        "attributes": ["message", "your-message", "content", "body", "inquiry", "your_message", "comment"],
+        "placeholders": ["お問い合わせ内容", "ご相談内容", "メッセージ", "本文", "Message"],
     },
     "company": {
-        "labels": ["会社名", "法人名", "団体名", "organization", "company", "屋号"],
-        "attributes": ["company", "organization", "your-company", "company-name"],
-        "placeholders": ["会社名", "法人名", "Company", "屋号"],
+        "labels": ["会社名", "屋号", "企業名", "organization", "company", "法人名"],
+        "attributes": ["company", "organization", "your-company", "company-name", "corp"],
+        "placeholders": ["会社名", "屋号", "Company"],
     },
 }
 
 
 class FormDetector:
-    """Detects and fills contact forms on Japanese websites."""
+    """Detect and fill contact forms on Japanese websites."""
 
     def __init__(self, page: Page, sender_info: dict, timeout: int = 30):
         self.page = page
         self.sender_info = sender_info
-        self.timeout = timeout * 1000  # ms
+        self.timeout = int(timeout) * 1000
+
+    @staticmethod
+    def _escape_css_text(text: str) -> str:
+        return str(text).replace("\\", "\\\\").replace("'", "\\'")
+
+    async def _is_fillable(self, locator: Locator) -> bool:
+        try:
+            if await locator.count() == 0:
+                return False
+            target = locator.first
+            if not await target.is_visible():
+                return False
+            if await target.is_disabled():
+                return False
+            tag = (await target.evaluate("el => el.tagName.toLowerCase()"))
+            if tag not in {"input", "textarea", "select"}:
+                return False
+            if tag == "input":
+                input_type = ((await target.get_attribute("type")) or "text").lower()
+                if input_type in {"hidden", "submit", "button", "image", "reset", "file"}:
+                    return False
+            return True
+        except Exception:
+            return False
+
+    async def _has_contact_form(self) -> bool:
+        try:
+            if await self.page.locator("form").count() > 0:
+                return True
+            if await self.page.locator("textarea:visible").count() > 0:
+                return True
+            if await self.page.locator("input[type='email']:visible").count() > 0:
+                return True
+            if await self.page.locator("input[type='text']:visible, input[type='tel']:visible").count() >= 2:
+                return True
+            return False
+        except Exception:
+            return False
 
     async def find_contact_page(self, base_url: str) -> Optional[str]:
-        """Find the contact page URL from a salon website."""
-        logger.info(f"[FORM] Searching for contact page: {base_url}")
+        logger.info("[FORM] Searching contact page: %s", base_url)
 
-        # Strategy 1: Try common URL paths
-        for path in CONTACT_PATH_PATTERNS:
-            url = urljoin(base_url.rstrip("/") + "/", path.lstrip("/"))
-            try:
-                response = await self.page.goto(url, timeout=self.timeout, wait_until="domcontentloaded")
-                if response and response.status == 200:
-                    has_form = await self.page.locator("form").count() > 0
-                    has_textarea = await self.page.locator("textarea").count() > 0
-                    has_inputs = await self.page.locator("input[type='text'], input[type='email']").count() > 0
-                    if has_form or has_textarea or has_inputs:
-                        logger.info(f"[FORM] Contact page found via path: {url}")
-                        return url
-            except (PlaywrightTimeout, Exception):
-                continue
-
-        # Strategy 2: Go to homepage and look for contact links
+        # Strategy 0: current URL itself might already be a contact form page.
         try:
-            await self.page.goto(base_url, timeout=self.timeout, wait_until="domcontentloaded")
-            await asyncio.sleep(2)
-        except (PlaywrightTimeout, Exception) as e:
-            logger.error(f"[ERROR] Cannot load homepage {base_url}: {e}")
-            return None
+            response = await self.page.goto(base_url, timeout=self.timeout, wait_until="domcontentloaded")
+            if response and response.status < 400 and await self._has_contact_form():
+                logger.info("[FORM] Contact page found directly: %s", self.page.url)
+                return self.page.url
+        except Exception:
+            pass
 
-        for link_text in CONTACT_LINK_TEXTS:
+        # Strategy 1: common contact path probing.
+        for path in CONTACT_PATH_PATTERNS:
+            target = urljoin(base_url.rstrip("/") + "/", path.lstrip("/"))
             try:
-                links = self.page.locator(f"a:has-text('{link_text}')")
-                count = await links.count()
-                if count > 0:
-                    href = await links.first.get_attribute("href")
-                    if href:
-                        contact_url = urljoin(base_url, href)
-                        logger.info(f"[FORM] Contact link found: '{link_text}' -> {contact_url}")
-                        return contact_url
+                response = await self.page.goto(target, timeout=self.timeout, wait_until="domcontentloaded")
+                if response and response.status < 400 and await self._has_contact_form():
+                    logger.info("[FORM] Contact page found via path: %s", self.page.url)
+                    return self.page.url
             except Exception:
                 continue
 
-        # Strategy 3: Check all links for contact-related hrefs
+        # Strategy 2: follow contact-like links from homepage.
         try:
-            all_links = await self.page.locator("a[href]").all()
-            for link in all_links:
+            await self.page.goto(base_url, timeout=self.timeout, wait_until="domcontentloaded")
+            await asyncio.sleep(1)
+        except Exception as e:
+            logger.warning("[FORM] Home load failed %s: %s", base_url, e)
+            return None
+
+        for text in CONTACT_LINK_TEXTS:
+            escaped = self._escape_css_text(text)
+            selector = f"a:has-text('{escaped}')"
+            try:
+                links = self.page.locator(selector)
+                count = await links.count()
+                for i in range(min(count, 5)):
+                    href = await links.nth(i).get_attribute("href")
+                    if not href:
+                        continue
+                    candidate = urljoin(self.page.url, href)
+                    try:
+                        response = await self.page.goto(candidate, timeout=self.timeout, wait_until="domcontentloaded")
+                        if response and response.status < 400 and await self._has_contact_form():
+                            logger.info("[FORM] Contact page found via link text '%s': %s", text, self.page.url)
+                            return self.page.url
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+
+        # Strategy 3: href-based fallback search.
+        try:
+            all_links = self.page.locator("a[href]")
+            count = await all_links.count()
+            for i in range(min(count, 150)):
+                href = await all_links.nth(i).get_attribute("href")
+                if not href:
+                    continue
+                href_low = href.lower()
+                if not any(token in href_low for token in ["contact", "inquiry", "otoiawase", "toiawase", "mail", "form"]):
+                    continue
+                candidate = urljoin(self.page.url, href)
                 try:
-                    href = await link.get_attribute("href")
-                    if href:
-                        href_lower = href.lower()
-                        for pattern in CONTACT_PATH_PATTERNS:
-                            if pattern.lower() in href_lower:
-                                contact_url = urljoin(base_url, href)
-                                logger.info(f"[FORM] Contact URL found in href: {contact_url}")
-                                return contact_url
+                    response = await self.page.goto(candidate, timeout=self.timeout, wait_until="domcontentloaded")
+                    if response and response.status < 400 and await self._has_contact_form():
+                        logger.info("[FORM] Contact page found via href: %s", self.page.url)
+                        return self.page.url
                 except Exception:
                     continue
         except Exception:
             pass
 
-        logger.warning(f"[FORM] No contact page found for {base_url}")
+        logger.warning("[FORM] No contact page found: %s", base_url)
         return None
 
-    async def detect_form_fields(self) -> Tuple[Dict[str, Optional[Locator]], dict]:
-        """Detect form fields on the current page.
-
-        Returns:
-            (fields_dict, form_map) - fields maps type->Locator, form_map is for logging.
-        """
-        detected = {}
-        form_map = {}
-        stats = {"total_checked": 0, "found": 0}
+    async def detect_form_fields(self) -> Tuple[Dict[str, Locator], dict]:
+        detected: Dict[str, Locator] = {}
+        form_map: Dict[str, str] = {}
+        stats = {"total_checked": len(FIELD_PATTERNS), "found": 0}
 
         for field_type, patterns in FIELD_PATTERNS.items():
-            stats["total_checked"] += 1
             locator, selector_used = await self._find_field(field_type, patterns)
-            if locator:
+            if locator and await self._is_fillable(locator):
                 detected[field_type] = locator
                 form_map[field_type] = selector_used
                 stats["found"] += 1
-                logger.info(f"[FORM] Field detected: {field_type} via {selector_used}")
+                logger.info("[FORM] detected field %s via %s", field_type, selector_used)
 
-        logger.info(f"[FORM] Detection complete: {stats['found']}/{stats['total_checked']} fields found")
         form_map["_stats"] = stats
+        logger.info("[FORM] detection complete: %s/%s", stats["found"], stats["total_checked"])
         return detected, form_map
 
     async def _find_field(self, field_type: str, patterns: dict) -> Tuple[Optional[Locator], str]:
-        """Find a form field using multiple detection strategies.
-
-        Returns:
-            (locator, selector_description) or (None, "").
-        """
-
-        # Strategy 1: Match by input name/id attribute
-        for attr_val in patterns["attributes"]:
+        # Strategy 1: by name/id attributes.
+        for attr_val in patterns.get("attributes", []):
+            escaped = self._escape_css_text(attr_val)
             for selector in [
-                f"input[name='{attr_val}']",
-                f"input[id='{attr_val}']",
-                f"input[name*='{attr_val}']",
-                f"input[id*='{attr_val}']",
-                f"textarea[name='{attr_val}']",
-                f"textarea[id='{attr_val}']",
-                f"textarea[name*='{attr_val}']",
+                f"input[name='{escaped}']",
+                f"input[id='{escaped}']",
+                f"input[name*='{escaped}']",
+                f"input[id*='{escaped}']",
+                f"textarea[name='{escaped}']",
+                f"textarea[id='{escaped}']",
+                f"textarea[name*='{escaped}']",
+                f"textarea[id*='{escaped}']",
+                f"select[name='{escaped}']",
+                f"select[id='{escaped}']",
+                f"select[name*='{escaped}']",
             ]:
                 try:
                     loc = self.page.locator(selector)
-                    if await loc.count() > 0:
-                        if await loc.first.is_visible():
-                            return loc.first, f"attr:{selector}"
+                    if await self._is_fillable(loc):
+                        return loc.first, f"attr:{selector}"
                 except Exception:
                     continue
 
-        # Strategy 2: Match by placeholder text
-        for placeholder in patterns["placeholders"]:
+        # Strategy 2: placeholder.
+        for text in patterns.get("placeholders", []):
+            if len(str(text).strip()) <= 1:
+                continue
+            escaped = self._escape_css_text(text)
             for tag in ["input", "textarea"]:
+                selector = f"{tag}[placeholder*='{escaped}']"
                 try:
-                    loc = self.page.locator(f"{tag}[placeholder*='{placeholder}']")
-                    if await loc.count() > 0:
-                        if await loc.first.is_visible():
-                            return loc.first, f"placeholder:{placeholder}"
+                    loc = self.page.locator(selector)
+                    if await self._is_fillable(loc):
+                        return loc.first, f"placeholder:{selector}"
                 except Exception:
                     continue
 
-        # Strategy 3: Match by aria-label
-        for label_text in patterns["labels"]:
+        # Strategy 3: aria-label.
+        for text in patterns.get("labels", []):
+            escaped = self._escape_css_text(text)
+            selector = f"input[aria-label*='{escaped}'], textarea[aria-label*='{escaped}'], select[aria-label*='{escaped}']"
             try:
-                loc = self.page.locator(f"input[aria-label*='{label_text}'], textarea[aria-label*='{label_text}']")
-                if await loc.count() > 0 and await loc.first.is_visible():
-                    return loc.first, f"aria-label:{label_text}"
+                loc = self.page.locator(selector)
+                if await self._is_fillable(loc):
+                    return loc.first, f"aria-label:{escaped}"
             except Exception:
                 continue
 
-        # Strategy 4: Match by associated label text
-        for label_text in patterns["labels"]:
+        # Strategy 4: label-for and label-inner mapping.
+        for text in patterns.get("labels", []):
+            escaped = self._escape_css_text(text)
             try:
-                label = self.page.locator(f"label:has-text('{label_text}')")
-                if await label.count() > 0:
-                    for_attr = await label.first.get_attribute("for")
-                    if for_attr:
-                        target = self.page.locator(f"#{for_attr}")
-                        if await target.count() > 0 and await target.first.is_visible():
-                            return target.first, f"label-for:{label_text}->{for_attr}"
-                    # Input inside label
-                    inner_input = label.first.locator("input, textarea")
-                    if await inner_input.count() > 0:
-                        return inner_input.first, f"label-inner:{label_text}"
+                labels = self.page.locator(f"label:has-text('{escaped}')")
+                count = await labels.count()
+                for i in range(min(count, 8)):
+                    label = labels.nth(i)
+                    label_text = (await label.inner_text()).strip()
+                    token = str(text).strip()
+                    if len(token) == 1 and not label_text.startswith(token):
+                        continue
+                    if field_type in {"name_sei", "name_mei"} and any(
+                        mark in label_text for mark in ["フリガナ", "ふりがな", "カナ", "セイ", "メイ"]
+                    ):
+                        continue
+                    if field_type.startswith("furigana") and not any(
+                        mark in label_text for mark in ["フリガナ", "ふりがな", "カナ", "セイ", "メイ"]
+                    ):
+                        continue
+                    target_id = await label.get_attribute("for")
+                    if target_id:
+                        loc = self.page.locator(f"#{self._escape_css_text(target_id)}")
+                        if await self._is_fillable(loc):
+                            return loc.first, f"label-for:{escaped}->{target_id}"
+                    inner = label.locator("input:visible, textarea:visible, select:visible")
+                    if await self._is_fillable(inner):
+                        return inner.first, f"label-inner:{escaped}"
             except Exception:
                 continue
 
-        # Strategy 5: Match by nearby text node (text before input)
-        for label_text in patterns["labels"]:
+        # Strategy 5: nearby text in common containers.
+        for text in patterns.get("labels", []):
+            escaped = self._escape_css_text(text)
             try:
-                # Look for text followed by input within common containers
-                containers = self.page.locator(f"div:has-text('{label_text}'), td:has-text('{label_text}'), p:has-text('{label_text}')")
+                containers = self.page.locator(
+                    f"div:has-text('{escaped}'), td:has-text('{escaped}'), th:has-text('{escaped}'), p:has-text('{escaped}')"
+                )
                 count = await containers.count()
-                for ci in range(min(count, 3)):
-                    container = containers.nth(ci)
-                    inner = container.locator("input:visible, textarea:visible")
-                    if await inner.count() > 0:
-                        return inner.first, f"nearby-text:{label_text}"
+                for i in range(min(count, 5)):
+                    container = containers.nth(i)
+                    loc = container.locator("input:visible, textarea:visible, select:visible")
+                    if await self._is_fillable(loc):
+                        return loc.first, f"nearby-text:{escaped}"
             except Exception:
                 continue
 
-        # Strategy 6: Type-specific fallbacks
-        if field_type == "message":
+        # Strategy 6: field type fallback.
+        fallback_map = {
+            "message": "textarea:visible",
+            "email": "input[type='email']:visible",
+            "phone": "input[type='tel']:visible",
+        }
+        fallback_selector = fallback_map.get(field_type)
+        if fallback_selector:
             try:
-                textareas = self.page.locator("textarea:visible")
-                if await textareas.count() > 0:
-                    return textareas.first, "fallback:textarea"
-            except Exception:
-                pass
-
-        if field_type == "email":
-            try:
-                email_input = self.page.locator("input[type='email']:visible")
-                if await email_input.count() > 0:
-                    return email_input.first, "fallback:type=email"
-            except Exception:
-                pass
-
-        if field_type == "phone":
-            try:
-                tel_input = self.page.locator("input[type='tel']:visible")
-                if await tel_input.count() > 0:
-                    return tel_input.first, "fallback:type=tel"
+                loc = self.page.locator(fallback_selector)
+                if await self._is_fillable(loc):
+                    return loc.first, f"fallback:{fallback_selector}"
             except Exception:
                 pass
 
         return None, ""
 
+    async def _is_required(self, locator: Locator) -> bool:
+        try:
+            target = locator.first
+            required_attr = await target.get_attribute("required")
+            aria_required = (await target.get_attribute("aria-required") or "").lower()
+            if required_attr is not None or aria_required == "true":
+                return True
+
+            field_id = await target.get_attribute("id")
+            if field_id:
+                labels = self.page.locator("label")
+                count = await labels.count()
+                for i in range(min(count, 100)):
+                    label = labels.nth(i)
+                    html_for = (await label.get_attribute("for") or "").strip()
+                    if html_for != field_id:
+                        continue
+                    label_text = (await label.inner_text()).strip()
+                    if any(marker in label_text for marker in REQUIRED_MARKERS):
+                        return True
+
+            wrapper_text = (
+                await target.evaluate(
+                    """
+                    (el) => {
+                      const candidates = [];
+                      const parent = el.closest('label,td,th,div,p,li,dt,dd,tr');
+                      if (parent) candidates.push(parent.innerText || '');
+                      const prev = el.previousElementSibling;
+                      if (prev) candidates.push(prev.innerText || prev.textContent || '');
+                      return candidates.join(' ');
+                    }
+                    """
+                )
+            )
+            return any(marker in str(wrapper_text) for marker in REQUIRED_MARKERS)
+        except Exception:
+            return False
+
     async def fill_form(self, fields: Dict[str, Locator], message: str, subject: str) -> Tuple[bool, dict]:
-        """Fill detected form fields with sender information.
+        stats = {"total_fields": len(fields), "filled": 0, "failed": 0, "skipped_optional": 0, "field_details": {}}
 
-        Handles split name fields (姓/名) and other Japanese patterns.
-        """
-        stats = {"total_fields": len(fields), "filled": 0, "failed": 0, "field_details": {}}
-
-        # Split sender name for sei/mei fields
-        full_name = self.sender_info.get("name", "")
-        name_parts = full_name.split() if full_name else ["", ""]
-        sei = name_parts[0] if len(name_parts) >= 1 else full_name
-        mei = name_parts[1] if len(name_parts) >= 2 else ""
-
+        # Name filling policy
         field_values = {
-            "name": full_name,
-            "name_sei": sei,
-            "name_mei": mei,
+            "name": DISPLAY_NAME,
+            "name_sei": SURNAME,
+            "name_mei": GIVEN_NAME,
+            "furigana": f"{FURIGANA_SEI} {FURIGANA_MEI}",
+            "furigana_sei": FURIGANA_SEI,
+            "furigana_mei": FURIGANA_MEI,
             "email": self.sender_info.get("email", ""),
             "phone": self.sender_info.get("phone", ""),
             "subject": subject,
             "message": message,
-            "company": self.sender_info.get("company", ""),
+            "company": COMPANY_NAME,
         }
+
+        # Pre-check required furigana fields only.
+        furigana_required = {}
+        for key in ["furigana", "furigana_sei", "furigana_mei"]:
+            if key in fields:
+                furigana_required[key] = await self._is_required(fields[key])
 
         for field_type, locator in fields.items():
             value = field_values.get(field_type, "")
             if not value:
                 continue
+
+            if field_type in furigana_required and not furigana_required[field_type]:
+                stats["skipped_optional"] += 1
+                stats["field_details"][field_type] = "skipped_optional_furigana"
+                continue
+
             try:
                 await locator.click()
-                await asyncio.sleep(0.3)
-                await locator.fill(value)
-                await asyncio.sleep(0.2)
+                await asyncio.sleep(0.1)
+                tag_name = (await locator.evaluate("el => el.tagName.toLowerCase()"))
+                if tag_name == "select":
+                    # Let handle_dropdowns() own select fields by default.
+                    if field_type in {"subject"}:
+                        stats["skipped_optional"] += 1
+                        stats["field_details"][field_type] = "skipped_select_handled_later"
+                        continue
+                    await locator.select_option(label=value, timeout=1000)
+                else:
+                    await locator.fill(value)
+                await asyncio.sleep(0.1)
                 stats["filled"] += 1
                 stats["field_details"][field_type] = "filled"
-                logger.info(f"[FORM] Filled {field_type}: {value[:30]}...")
+                logger.info("[FORM] filled %s", field_type)
             except Exception as e:
                 stats["failed"] += 1
-                stats["field_details"][field_type] = f"failed: {e}"
-                logger.error(f"[ERROR] Failed to fill {field_type}: {e}")
+                stats["field_details"][field_type] = f"failed:{str(e)[:120]}"
+                logger.warning("[FORM] fill failed %s: %s", field_type, e)
 
-        # If split name fields exist but full name field doesn't, count as success
-        has_name = "name" in fields or ("name_sei" in fields and "name_mei" in fields)
-        has_contact = "email" in fields or "message" in fields
+        has_name = "name" in fields or "name_sei" in fields or "name_mei" in fields
+        has_contact = "email" in fields and "message" in fields
         success = stats["filled"] >= 2 and (has_name or has_contact)
 
-        logger.info(f"[FORM] Fill complete: {stats['filled']}/{stats['total_fields']} fields filled")
+        logger.info(
+            "[FORM] fill complete: filled=%s failed=%s skipped_optional=%s",
+            stats["filled"],
+            stats["failed"],
+            stats["skipped_optional"],
+        )
         return success, stats
 
     async def handle_checkboxes(self) -> None:
-        """Handle common checkbox patterns (privacy policy, consent, etc.)."""
-        checkbox_patterns = [
-            "input[type='checkbox'][name*='privacy']",
-            "input[type='checkbox'][name*='consent']",
-            "input[type='checkbox'][name*='agree']",
-            "input[type='checkbox'][name*='policy']",
-            "input[type='checkbox'][name*='check']",
-            "input[type='checkbox'][name*='confirm']",
-            "input[type='checkbox'][name*='accept']",
-        ]
-        for pattern in checkbox_patterns:
-            try:
-                checkboxes = self.page.locator(pattern)
-                count = await checkboxes.count()
-                for i in range(count):
-                    cb = checkboxes.nth(i)
-                    if not await cb.is_checked():
-                        await cb.check()
-                        logger.info(f"[FORM] Checkbox checked: {pattern}")
-            except Exception:
-                continue
-
-        # Label-based checkboxes (common in Japanese forms)
-        privacy_labels = [
-            "プライバシーポリシー",
-            "個人情報",
-            "同意",
-            "利用規約",
-            "承諾",
-            "個人情報保護方針",
-            "個人情報保護",
-            "に同意",
-            "プライバシー",
-        ]
-        for label_text in privacy_labels:
-            try:
-                label = self.page.locator(f"label:has-text('{label_text}')")
-                if await label.count() > 0:
-                    cb = label.first.locator("input[type='checkbox']")
-                    if await cb.count() > 0 and not await cb.first.is_checked():
-                        await cb.first.check()
-                        logger.info(f"[FORM] Privacy checkbox checked: {label_text}")
-            except Exception:
-                continue
-
-        # Also try standalone checkboxes near privacy text
+        # Required visible checkboxes first.
         try:
-            all_checkboxes = self.page.locator("input[type='checkbox']:visible")
-            count = await all_checkboxes.count()
-            if count == 1:
-                # If there's only one visible checkbox, it's likely a consent checkbox
-                cb = all_checkboxes.first
-                if not await cb.is_checked():
+            boxes = self.page.locator("input[type='checkbox']:visible")
+            count = await boxes.count()
+            for i in range(count):
+                cb = boxes.nth(i)
+                if await cb.is_checked():
+                    continue
+                if await self._is_required(cb):
                     await cb.check()
-                    logger.info("[FORM] Single checkbox checked (likely consent)")
+                    logger.info("[FORM] checked required checkbox")
         except Exception:
             pass
 
-    async def handle_dropdowns(self) -> None:
-        """Handle dropdown menus (category/inquiry type) common in Japanese forms."""
-        dropdown_labels = [
-            "お問い合わせ種別",
-            "お問い合わせ種類",
-            "カテゴリ",
-            "ご用件",
-            "種別",
-            "お問合せ種別",
+        consent_labels = [
+            "個人情報保護方針に同意",
+            "個人情報保護方針",
+            "プライバシーポリシー",
+            "同意",
+            "利用規約",
         ]
-        safe_options = ["その他", "その他のお問い合わせ", "一般的なお問い合わせ", "ご質問"]
-
-        for label_text in dropdown_labels:
+        for text in consent_labels:
+            escaped = self._escape_css_text(text)
             try:
-                label = self.page.locator(f"label:has-text('{label_text}')")
-                if await label.count() == 0:
-                    continue
-
-                for_attr = await label.first.get_attribute("for")
-                select = None
-                if for_attr:
-                    select = self.page.locator(f"select#{for_attr}")
-                else:
-                    select = label.first.locator("select")
-
-                if select and await select.count() > 0:
-                    # Try safe options first
-                    options = await select.first.locator("option").all()
-                    selected = False
-                    for safe_opt in safe_options:
-                        for opt in options:
-                            text = (await opt.inner_text()).strip()
-                            if safe_opt in text:
-                                value = await opt.get_attribute("value")
-                                if value:
-                                    await select.first.select_option(value=value)
-                                    logger.info(f"[FORM] Dropdown selected: {label_text} -> {text}")
-                                    selected = True
-                                    break
-                        if selected:
-                            break
-
-                    # If no safe option found, select first non-empty option
-                    if not selected and len(options) > 1:
-                        for opt in options[1:]:
-                            value = await opt.get_attribute("value")
-                            if value and value.strip():
-                                text = (await opt.inner_text()).strip()
-                                await select.first.select_option(value=value)
-                                logger.info(f"[FORM] Dropdown fallback: {label_text} -> {text}")
-                                break
-            except Exception as e:
-                logger.warning(f"[FORM] Dropdown handling failed for {label_text}: {e}")
-                continue
-
-        # Also try detecting standalone select elements with common names
-        select_name_patterns = [
-            "select[name*='category']",
-            "select[name*='type']",
-            "select[name*='subject']",
-            "select[name*='kind']",
-        ]
-        for pattern in select_name_patterns:
-            try:
-                selects = self.page.locator(pattern)
-                if await selects.count() > 0:
-                    select = selects.first
-                    # Check if already has a selection
-                    current = await select.input_value()
-                    if not current or current == "":
-                        options = await select.locator("option").all()
-                        if len(options) > 1:
-                            # Select first non-empty
-                            for opt in options[1:]:
-                                value = await opt.get_attribute("value")
-                                if value and value.strip():
-                                    await select.select_option(value=value)
-                                    text = (await opt.inner_text()).strip()
-                                    logger.info(f"[FORM] Standalone dropdown: {pattern} -> {text}")
-                                    break
+                labels = self.page.locator(f"label:has-text('{escaped}')")
+                count = await labels.count()
+                for i in range(min(count, 5)):
+                    label = labels.nth(i)
+                    cb = label.locator("input[type='checkbox']")
+                    if await cb.count() > 0 and not await cb.first.is_checked():
+                        await cb.first.check()
+                        logger.info("[FORM] checked consent checkbox by label: %s", text)
+                        return
             except Exception:
                 continue
 
+    async def handle_dropdowns(self) -> None:
+        preferred_tokens = ["その他", "other", "一般"]
+        placeholder_tokens = ["選択", "お選び", "choose", "--"]
+
+        try:
+            selects = self.page.locator("select:visible")
+            count = await selects.count()
+            for i in range(count):
+                select = selects.nth(i)
+                try:
+                    current = (await select.input_value() or "").strip()
+                except Exception:
+                    current = ""
+
+                if current:
+                    continue
+
+                options = select.locator("option")
+                opt_count = await options.count()
+                if opt_count == 0:
+                    continue
+
+                chosen_value = ""
+                fallback_value = ""
+                for oi in range(opt_count):
+                    opt = options.nth(oi)
+                    val = ((await opt.get_attribute("value")) or "").strip()
+                    txt = ((await opt.inner_text()) or "").strip()
+                    low = txt.lower()
+
+                    if not val and not txt:
+                        continue
+                    if any(token in low for token in placeholder_tokens) and not val:
+                        continue
+
+                    if not fallback_value and val:
+                        fallback_value = val
+
+                    if any(token in low for token in preferred_tokens) and val:
+                        chosen_value = val
+                        break
+
+                final_value = chosen_value or fallback_value
+                if final_value:
+                    await select.select_option(value=final_value)
+                    logger.info("[FORM] dropdown selected: %s", final_value)
+        except Exception as e:
+            logger.warning("[FORM] dropdown handling error: %s", e)
+
     async def detect_captcha(self) -> bool:
-        """Check if the page has a CAPTCHA."""
-        captcha_indicators = [
+        selectors = [
             "iframe[src*='recaptcha']",
             "iframe[src*='hcaptcha']",
             ".g-recaptcha",
             "#recaptcha",
             "[data-sitekey]",
+            "iframe[title*='CAPTCHA']",
             "iframe[title*='reCAPTCHA']",
         ]
-        for selector in captcha_indicators:
+        for selector in selectors:
             try:
                 if await self.page.locator(selector).count() > 0:
-                    logger.warning("[FORM] CAPTCHA detected - will skip submission")
+                    logger.warning("[FORM] captcha selector detected: %s", selector)
                     return True
             except Exception:
                 continue
-        return False
 
-    async def find_submit_button(self) -> Tuple[Optional[Locator], str, bool]:
-        """Find the form submit button.
-
-        Returns:
-            (locator, selector_string, is_confirm_step)
-            - locator: the button Locator (or None)
-            - selector_string: CSS selector used to find it (for resume_submit)
-            - is_confirm_step: True if button leads to a confirmation page (確認),
-              False if it's a direct send (送信) button.
-        """
-        # Confirm-step selectors (clicking leads to confirmation page, NOT final send)
-        confirm_selectors = [
-            "button:has-text('確認画面へ')",
-            "button:has-text('確認画面へ進む')",
-            "button:has-text('確認する')",
-            "button:has-text('確認')",
-            "input[value='確認画面へ']",
-            "input[value='確認画面へ進む']",
-            "input[value='確認する']",
-            "input[value='確認']",
-            "a:has-text('確認画面へ')",
-            "a:has-text('確認')",
-        ]
-        # Direct-send selectors (clicking submits the form)
-        # Keep broad type=submit selectors near the end so explicit confirm labels win.
-        send_selectors = [
-            "button:has-text('送信')",
-            "button:has-text('送信する')",
-            "button:has-text('送る')",
-            "button:has-text('Submit')",
-            "input[value='送信']",
-            "input[value='送信する']",
-            "a:has-text('送信')",
-            "button[type='submit']",
-            "input[type='submit']",
-        ]
-
-        # Try confirm-step first to avoid mistaking "確認" buttons as final send.
-        for selector in confirm_selectors:
-            try:
-                loc = self.page.locator(selector)
-                if await loc.count() > 0 and await loc.first.is_visible():
-                    logger.info(f"[FORM] Submit button found (confirm step): {selector}")
-                    return loc.first, selector, True
-            except Exception:
-                continue
-
-        # Then try direct-send selectors.
-        for selector in send_selectors:
-            try:
-                loc = self.page.locator(selector)
-                if await loc.count() > 0 and await loc.first.is_visible():
-                    try:
-                        text = (await loc.first.inner_text()).strip().lower()
-                    except Exception:
-                        text = ((await loc.first.get_attribute("value")) or "").strip().lower()
-                    if any(k in text for k in ["確認", "confirm"]):
-                        logger.info(f"[FORM] Submit button found (confirm-like text): {selector}")
-                        return loc.first, selector, True
-                    logger.info(f"[FORM] Submit button found (direct send): {selector}")
-                    return loc.first, selector, False
-            except Exception:
-                continue
-
-        # Fallback: any button inside a form
         try:
-            form_buttons = self.page.locator("form button:visible")
-            if await form_buttons.count() > 0:
-                return form_buttons.last, "form button:visible (fallback)", False
+            body = (await self.page.inner_text("body")).lower()
+            if any(
+                token in body
+                for token in [
+                    "captcha",
+                    "cloudflare",
+                    "verify you are human",
+                    "human verification",
+                    "私はロボットではありません",
+                ]
+            ):
+                logger.warning("[FORM] captcha/bot text detected")
+                return True
         except Exception:
             pass
 
-        logger.warning("[FORM] No submit button found")
-        return None, "", False
+        return False
 
-    async def handle_confirmation_page(self) -> bool:
-        """Handle two-step submission (confirm -> send) common in Japanese forms."""
-        await asyncio.sleep(2)
+    async def find_submit_button(self) -> Tuple[Optional[Locator], str, bool]:
+        """Find submit/confirm button.
 
-        confirm_send_selectors = [
-            "button:has-text('送信')",
-            "button:has-text('送信する')",
-            "input[value='送信']",
-            "input[value='送信する']",
-            "button:has-text('この内容で送信')",
-            "button:has-text('上記の内容で送信')",
-            "button:has-text('上記内容で送信する')",
-            "a:has-text('送信する')",
-        ]
+        Returns:
+            (locator, selector, is_confirm_step)
+        """
+        confirm_texts = ["確認", "確認画面へ", "内容確認", "確認する"]
+        final_submit_texts = ["送信", "送信する", "送信内容を送信", "確定", "この内容で送信", "Submit"]
 
-        page_text = await self.page.inner_text("body")
-        confirmation_keywords = ["確認", "以下の内容", "送信してよろしいですか", "入力内容の確認", "内容をご確認"]
-        is_confirmation = any(kw in page_text for kw in confirmation_keywords)
+        def selectors_from_text(text: str) -> list[str]:
+            escaped = self._escape_css_text(text)
+            return [
+                f"button:has-text('{escaped}')",
+                f"input[type='submit'][value*='{escaped}']",
+                f"input[type='button'][value*='{escaped}']",
+                f"a:has-text('{escaped}')",
+            ]
 
-        if is_confirmation:
-            logger.info("[FORM] Confirmation page detected")
-            for selector in confirm_send_selectors:
+        for text in confirm_texts:
+            for selector in selectors_from_text(text):
                 try:
                     loc = self.page.locator(selector)
                     if await loc.count() > 0 and await loc.first.is_visible():
-                        await loc.first.click()
-                        logger.info(f"[FORM] Clicked final submit: {selector}")
-                        await asyncio.sleep(2)
-                        return True
+                        logger.info("[FORM] confirm button found: %s", selector)
+                        return loc.first, selector, True
                 except Exception:
                     continue
+
+        for text in final_submit_texts:
+            for selector in selectors_from_text(text):
+                try:
+                    loc = self.page.locator(selector)
+                    if await loc.count() > 0 and await loc.first.is_visible():
+                        logger.info("[FORM] submit button found: %s", selector)
+                        return loc.first, selector, False
+                except Exception:
+                    continue
+
+        for selector in ["button[type='submit']", "input[type='submit']", "form button:visible", "form input[type='button']:visible"]:
+            try:
+                loc = self.page.locator(selector)
+                if await loc.count() == 0 or not await loc.first.is_visible():
+                    continue
+
+                text = ""
+                try:
+                    text = ((await loc.first.inner_text()) or "").strip().lower()
+                except Exception:
+                    text = ((await loc.first.get_attribute("value")) or "").strip().lower()
+
+                is_confirm = any(token in text for token in ["確認", "confirm"])
+                logger.info("[FORM] fallback submit button found: %s", selector)
+                return loc.first, selector, is_confirm
+            except Exception:
+                continue
+
+        logger.warning("[FORM] submit button not found")
+        return None, "", False
+
+    async def handle_confirmation_page(self) -> bool:
+        """On confirmation page, click final submit if available."""
+        await asyncio.sleep(1)
+
+        try:
+            body = (await self.page.inner_text("body")).lower()
+        except Exception:
+            body = ""
+
+        confirm_markers = ["確認", "内容確認", "送信内容", "この内容で", "confirm"]
+        if not any(marker.lower() in body for marker in confirm_markers):
+            return False
+
+        final_submit_selectors = [
+            "button:has-text('送信')",
+            "button:has-text('送信する')",
+            "button:has-text('この内容で送信')",
+            "button:has-text('送信内容を送信')",
+            "button:has-text('確定')",
+            "input[type='submit'][value*='送信']",
+            "input[type='submit'][value*='確定']",
+            "a:has-text('送信')",
+        ]
+
+        for selector in final_submit_selectors:
+            try:
+                loc = self.page.locator(selector)
+                if await loc.count() == 0 or not await loc.first.is_visible():
+                    continue
+                await loc.first.click()
+                logger.info("[FORM] final submit clicked on confirmation page: %s", selector)
+                await asyncio.sleep(1)
+                return True
+            except Exception:
+                continue
 
         return False

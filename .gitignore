@@ -30,15 +30,23 @@ env/
 Thumbs.db
 
 # Data (may contain client info)
-# sensitive lead data
-data/leads*.csv
-data/submission_ledger.csv
+# --- sensitive / local data ---
+data/*.csv
+data/*.json
 data/state.json
+data/submission_ledger.csv
 
-# outputs
+# --- outputs ---
 results/
 screenshots/
 
-# local files
-*.xlsx
+# --- local office temp ---
+~$*.xlsx
+*.xlsx#
+*.tmp
+
+# --- venv ---
+.venv/
+env/
+
 

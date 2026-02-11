@@ -1,3 +1,3 @@
-id,店名,url(旧),url(デモ)
-21001,モックサロンA,http://127.0.0.1:5000/,https://example.com/mock-a
-21002,モックサロンB,http://127.0.0.1:5000/,https://example.com/mock-b
+﻿id,店名,url(旧),url(デモ)
+22007,Mock Salon G,http://127.0.0.1:5000/contact_single,https://example.com/mock-g
+22008,Mock Salon H,http://127.0.0.1:5000/contact_split,https://example.com/mock-h

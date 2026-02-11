@@ -47,6 +47,31 @@ python src/main.py --report-only
 
 `results/review_queue_YYYYMMDD.csv` に手動確認キューが追記されます（同日同IDは重複追加しません）。
 
+ログには停止位置を明示します:
+
+- `SEMI_AUTO: stopped on confirmation page`
+- `SEMI_AUTO: stopped before submit`
+
+## Name Filling Policy
+
+- 単一名前フィールド（お名前/氏名/Name）: `KIMOTO STUDIO`
+- 姓/名分割フィールド:
+ - 姓/Last Name: `木許`
+ - 名/First Name: `裕輔`
+- 会社名/屋号フィールド: `KIMOTO STUDIO`
+- フリガナ欄:
+ - 任意なら未入力のまま
+ - 必須なら `姓フリガナ=キモト` / `名フリガナ=ユウスケ`
+
+## Message Formatting Options
+
+`config/settings.json` で本文整形を制御できます:
+
+- `wrap_message`: `true/false`
+- `wrap_width`: `40-60` 推奨（default `56`）
+
+本文は段落区切り（空行）を維持しつつ折り返し、`────────────────` 区切りを付与します。
+
 ## Manual Submit (prepared 1件送信)
 
 ```bash
@@ -141,6 +166,11 @@ bot保護検知（CAPTCHA / Cloudflare / verify human / HTTP 403/429）時:
 python tests/mock_server.py --host 127.0.0.1 --port 5000
 ```
 
+モックサーバーは2種類のフォームを提供します:
+
+- `/contact_single`: 単一名前 + 会社名(任意)
+- `/contact_split`: 姓/名分割 + フリガナ必須 + 会社名(任意)
+
 2. `config/settings.json` を以下で固定
  - `mode = "SEMI_AUTO"`
  - `headless = false`
@@ -157,9 +187,10 @@ python src/main.py
 ```
 
 4. 期待結果
- - `screenshots/YYYYMMDD/21001_01_before_fill.png`
- - `screenshots/YYYYMMDD/21001_02_after_fill.png`
- - `screenshots/YYYYMMDD/21001_03_before_submit_or_confirm.png`
+ - `screenshots/YYYYMMDD/<id>_01_before_fill.png`
+ - `screenshots/YYYYMMDD/<id>_02_after_fill.png`
+ - `screenshots/YYYYMMDD/<id>_03_before_submit_or_confirm.png`
+ - （確認ページあり）`screenshots/YYYYMMDD/<id>_04_on_confirmation_page.png`
  - `results/submissions_YYYYMMDD.csv` に `status=prepared` が2件
  - `results/review_queue_YYYYMMDD.csv` に `final_step_url` と selector が記録
  - `data/state.json` の `today_count` は増えない（sentのみカウント）

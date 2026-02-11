@@ -44,16 +44,16 @@ LEDGER_PATH = os.path.join(DATA_DIR, "submission_ledger.csv")
 
 def load_json(path: str, fallback: dict) -> dict:
     if os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8-sig") as f:
             return json.load(f)
     return fallback.copy()
 
 
-def load_lead_ids() -> set[str]:
-    if not os.path.exists(LEADS_PATH):
+def load_lead_ids(leads_path: str) -> set[str]:
+    if not os.path.exists(leads_path):
         return set()
     ids = set()
-    with open(LEADS_PATH, "r", encoding="utf-8-sig", newline="") as f:
+    with open(leads_path, "r", encoding="utf-8-sig", newline="") as f:
         for row in csv.DictReader(f):
             value = str(row.get("id", "")).strip()
             if value:
@@ -209,9 +209,11 @@ async def submit_prepared(entry: dict, settings: dict, sender_info: dict) -> Tup
 
 async def async_main(args: argparse.Namespace) -> int:
     salon_id = str(args.salon_id).strip()
+    settings = load_json(SETTINGS_PATH, {})
+    leads_path = str(settings.get("leads_csv_path", LEADS_PATH))
 
-    if salon_id not in load_lead_ids():
-        print(f"salon_id={salon_id} is not in leads.csv")
+    if salon_id not in load_lead_ids(leads_path):
+        print(f"salon_id={salon_id} is not in {leads_path}")
         return 1
 
     # Robust anti-duplicate check (state + ledger)
@@ -226,7 +228,6 @@ async def async_main(args: argparse.Namespace) -> int:
         print(f"No prepared entry found for salon_id={salon_id}")
         return 1
 
-    settings = load_json(SETTINGS_PATH, {})
     sender_info = load_json(SENDER_INFO_PATH, {})
 
     ok = False

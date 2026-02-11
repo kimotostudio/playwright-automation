@@ -77,6 +77,25 @@ class MessageGenerator:
 
         return body
 
+    @staticmethod
+    def _pick_field(row: dict, keys: list[str]) -> str:
+        for key in keys:
+            value = row.get(key) if isinstance(row, dict) else None
+            if value is not None and str(value).strip():
+                return str(value).strip()
+        return ""
+
+    def resolve_lead_fields(self, row: dict) -> Dict[str, str]:
+        """Resolve lead fields from row with robust Japanese header fallbacks."""
+        salon_name = self._pick_field(row, ["店名", "店舗名", "名称", "サロン名", "salon_name"])
+        demo_url = self._pick_field(row, ["url(デモ)", "url(デモページ)", "demo_url", "url_demo"])
+        old_url = self._pick_field(row, ["url(旧)", "URL", "url"])
+        return {
+            "salon_name": salon_name,
+            "demo_url": demo_url,
+            "old_url": old_url,
+        }
+
     def generate(self, salon_name: str, demo_url: str) -> str:
         message = self.template.format(
             salon_name=salon_name,
