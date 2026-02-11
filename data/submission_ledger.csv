@@ -1,0 +1,11 @@
+﻿timestamp,run_mode,salon_id,salon_name,domain,contact_url,final_step_url,status,reason
+2026-02-11 14:28:35,SEMI_AUTO,9901,???????1,127.0.0.1:8766,http://127.0.0.1:8766/contact,,failed,"exception:Page.goto: Download is starting
+Call log:
+  - navigating to ""http://127.0.0.1:8766/contact"", waiting until ""domcontentloaded"""
+2026-02-11 14:28:47,SEMI_AUTO,9902,???????2,127.0.0.1:8766,http://127.0.0.1:8766/contact,,failed,"exception:Page.goto: Download is starting
+Call log:
+  - navigating to ""http://127.0.0.1:8766/contact"", waiting until ""domcontentloaded"""
+2026-02-11 14:29:19,SEMI_AUTO,9903,LocalTest3,127.0.0.1:8767,http://127.0.0.1:8767/contact,http://127.0.0.1:8767/contact/,prepared,semi_auto_prepared
+2026-02-11 14:29:34,SEMI_AUTO,9904,LocalTest4,127.0.0.1:8767,http://127.0.0.1:8767/contact,http://127.0.0.1:8767/contact/,prepared,semi_auto_prepared
+2026-02-11 14:39:03,SEMI_AUTO,21001,モックサロンA,127.0.0.1:5000,http://127.0.0.1:5000/contact,http://127.0.0.1:5000/confirm,prepared,semi_auto_prepared
+2026-02-11 14:39:13,SEMI_AUTO,21002,モックサロンB,127.0.0.1:5000,http://127.0.0.1:5000/contact,http://127.0.0.1:5000/confirm,prepared,semi_auto_prepared

@@ -1,0 +1,3 @@
+# Blocked domains (one per line)
+# Domains listed here will be skipped entirely.
+# Lines starting with # are comments.

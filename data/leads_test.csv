@@ -1,0 +1,3 @@
+id,店名,url(旧),url(デモ)
+21001,モックサロンA,http://127.0.0.1:5000/,https://example.com/mock-a
+21002,モックサロンB,http://127.0.0.1:5000/,https://example.com/mock-b

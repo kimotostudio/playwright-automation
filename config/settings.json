@@ -1,0 +1,43 @@
+{
+  "mode": "SEMI_AUTO",
+  "stop": false,
+  "dry_run": false,
+  "daily_limit": 2,
+  "min_delay_sec": 1,
+  "max_delay_sec": 2,
+  "cooldown_on_error_min_sec": 30,
+  "cooldown_on_error_max_sec": 90,
+  "consecutive_failure_pause_threshold": 3,
+  "consecutive_failure_pause_minutes": 10,
+  "max_attempts_per_domain_per_day": 2,
+  "headless": false,
+  "timeout_seconds": 30,
+  "screenshot_enabled": true,
+  "timezone": "Asia/Tokyo",
+  "test_mode": false,
+  "test_limit": 2,
+  "retry_max": 2,
+  "allow_submit": true,
+  "respect_robots_and_terms": true,
+  "business_only_filter": true,
+  "quiet_hours_start": 22,
+  "quiet_hours_end": 8,
+  "domain_cooldown_days": 7,
+  "log_format": "text",
+  "contact_page_patterns": [
+    "/contact",
+    "/inquiry",
+    "/お問い合わせ",
+    "/otoiawase",
+    "/mail",
+    "/form",
+    "/ask"
+  ],
+  "browser": {
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "viewport_width": 1280,
+    "viewport_height": 720,
+    "locale": "ja-JP"
+  },
+  "leads_csv_path": "data/leads_test.csv"
+}

@@ -1,0 +1,3 @@
+# Blocked URLs (one per line)
+# URLs listed here will be skipped entirely.
+# Lines starting with # are comments.
