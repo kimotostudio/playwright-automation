@@ -1,16 +1,7 @@
-# Secrets & personal info
+﻿# Secrets & personal info
 config/sender_info.json
 .env
 *.env
-
-# Output
-results/
-screenshots/
-logs/
-*.log
-
-# State
-data/state.json
 
 # Python
 __pycache__/
@@ -29,24 +20,25 @@ env/
 .DS_Store
 Thumbs.db
 
-# Data (may contain client info)
-# --- sensitive / local data ---
-data/*.csv
-data/*.json
-data/state.json
+# Sensitive lead/state data
+data/leads*.csv
 data/submission_ledger.csv
+data/state.json
+data/staff_actions_*.csv
+data/operator_actions_*.csv
+data/domain_cooldowns.json
+data/blocklist_domains.txt
+data/blocklist_urls.txt
 
-# --- outputs ---
+# Outputs
 results/
 screenshots/
+logs/
+*.log
 
-# --- local office temp ---
+# Spreadsheets and office temp
+*.xlsx
 ~$*.xlsx
 *.xlsx#
+.~lock.*
 *.tmp
-
-# --- venv ---
-.venv/
-env/
-
-
