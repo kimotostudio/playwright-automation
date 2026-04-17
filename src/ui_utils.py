@@ -600,7 +600,7 @@ def undo_last_action(path: Path) -> tuple[bool, str]:
 
 def run_prefill_subprocess(
     salon_id: str,
-    review_queue_path: Path,
+    review_queue_path: Path | None,
     *,
     final_url: str = "",
     keep_open: bool = True,
@@ -612,7 +612,7 @@ def run_prefill_subprocess(
         "--lead-id",
         str(salon_id),
     ]
-    if review_queue_path and review_queue_path.exists():
+    if review_queue_path and review_queue_path.exists() and review_queue_path.is_file():
         cmd.extend(["--queue", str(review_queue_path)])
     if str(final_url).strip():
         cmd.extend(["--final-url", str(final_url).strip()])
@@ -632,7 +632,7 @@ def run_prefill_subprocess(
 
 def run_detection_subprocess(
     salon_id: str,
-    review_queue_path: Path,
+    review_queue_path: Path | None,
     *,
     base_url: str = "",
     final_url: str = "",
@@ -647,7 +647,7 @@ def run_detection_subprocess(
         "--no-keep-open",
         "--no-wait",
     ]
-    if review_queue_path and review_queue_path.exists():
+    if review_queue_path and review_queue_path.exists() and review_queue_path.is_file():
         cmd.extend(["--queue", str(review_queue_path)])
     if str(base_url).strip():
         cmd.extend(["--base-url", str(base_url).strip()])

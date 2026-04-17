@@ -1,4 +1,4 @@
-"""Safety guards: blocklist, domain cooldown, robots.txt, corporate filter, quiet hours."""
+﻿"""Safety guards: blocklist, domain cooldown, robots.txt, corporate filter, quiet hours."""
 
 import csv
 import json
@@ -241,6 +241,7 @@ def detect_bot_protection(page_text: str, status_code: Optional[int] = None) -> 
     indicators = [
         "verify you are human",
         "あなたがロボットではないことを確認",
+        "人間であることを確認",
         "cloudflare",
         "just a moment",
         "checking your browser",
@@ -256,6 +257,88 @@ def detect_bot_protection(page_text: str, status_code: Optional[int] = None) -> 
     if status_code in (403, 429):
         return True
     return False
+
+
+async def count_required_fields(page) -> int:
+    """Count visible required fields on current page."""
+    try:
+        return int(
+            await page.evaluate(
+                """
+                () => {
+                  const nodes = Array.from(document.querySelectorAll('input, textarea, select'));
+                  let count = 0;
+                  for (const el of nodes) {
+                    const style = window.getComputedStyle(el);
+                    if (style.display === 'none' || style.visibility === 'hidden') continue;
+                    if (el.disabled) continue;
+                    const requiredByAttr = el.hasAttribute('required');
+                    const requiredByAria = (el.getAttribute('aria-required') || '').toLowerCase() === 'true';
+                    const requiredByText = /必須|\\*|＊|required|Required/.test(
+                      el.closest('label,td,th,div,p,li,dt,dd,tr')?.innerText || ''
+                    );
+                    if (requiredByAttr || requiredByAria || requiredByText) count += 1;
+                  }
+                  return count;
+                }
+                """
+            )
+        )
+    except Exception:
+        return 0
+
+
+def detect_hard_site(
+    page_text: str,
+    status_code: Optional[int] = None,
+    *,
+    popup_or_download: bool = False,
+    required_fields_count: Optional[int] = None,
+    required_field_threshold: int = 10,
+    skip_if_requires_login: bool = True,
+) -> Tuple[bool, str]:
+    """Detect hard-to-automate pages and return skip reason."""
+    text = (page_text or "").lower()
+
+    if detect_bot_protection(page_text, status_code):
+        return True, "bot_protection"
+
+    js_block_indicators = [
+        "enable javascript",
+        "javascript is disabled",
+        "access denied",
+        "verify you are human",
+        "just a moment",
+    ]
+    if any(token in text for token in js_block_indicators):
+        return True, "bot_protection"
+
+    if skip_if_requires_login:
+        login_keywords = [
+            "ログイン",
+            "会員",
+            "パスワード",
+            "認証",
+            "ログインしてください",
+        ]
+        if any(keyword in page_text for keyword in login_keywords):
+            return True, "requires_login"
+
+    reservation_keywords = [
+        "予約サイト",
+        "予約はこちら",
+        "book now",
+    ]
+    if any(keyword in text for keyword in reservation_keywords):
+        return True, "reservation_only"
+
+    if popup_or_download:
+        return True, "popup_or_download"
+
+    if isinstance(required_fields_count, int) and required_fields_count > int(required_field_threshold):
+        return True, f"too_many_required_fields:{required_fields_count}"
+
+    return False, ""
 
 
 def detect_corporate(page_text: str) -> Tuple[bool, str]:

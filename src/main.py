@@ -21,7 +21,7 @@ from playwright.async_api import Locator, Page, async_playwright
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
-from src.blocklist import block_domain, ensure_blocklist_files, extract_domain, is_blocked
+from src.blocklist import block_domain, ensure_blocklist_files, extract_domain, is_blocked, seed_blocklist_domains_from_csv
 from src.form_detector import FormDetector
 from src.ledger import append_ledger as _append_ledger, ledger_has, read_ledger
 from src.message_generator import MessageGenerator
@@ -53,6 +53,7 @@ STATE_PATH = os.path.join(DATA_DIR, "state.json")
 LEADS_PATH = os.path.join(DATA_DIR, "leads.csv")
 LEDGER_PATH = os.path.join(DATA_DIR, "submission_ledger.csv")
 SEMI_AUTO_REPORT_PATH = os.path.join(RESULTS_DIR, "semi_auto_report.csv")
+DEFAULT_AIDNET_DOMAIN_LIST_PATH = os.path.join(DATA_DIR, "エイドネット_ドメインリスト - リスト_日本語学校.csv")
 
 DEFAULT_SKIP_DOMAINS = [
     "hotpepper.jp",
@@ -115,6 +116,20 @@ SKIPPED_STATUSES = {
     "skipped_bot_protection",
     "skipped_dead_site",
 }
+
+SALON_NAME_ALIASES = ["店名", "名称", "サロン名", "店舗名", "salon_name", "name"]
+OLD_URL_ALIASES = ["url(旧)", "url（旧）", "url旧", "url(old)", "URL", "old_url", "url", "website"]
+DEMO_URL_ALIASES = [
+    "url(デモ)",
+    "url(デモページ)",
+    "url（デモページ）",
+    "url（デモ）",
+    "urlデモ",
+    "demo_url",
+    "url_demo",
+    "demo",
+]
+LEAD_ID_ALIASES = ["id", "ID", "lead_id", "leadid", "管理番号"]
 
 
 def is_prepared_status(status: str) -> bool:
@@ -399,6 +414,16 @@ def load_settings() -> dict:
         return json.load(f)
 
 
+def _resolve_setting_path(path_value: str) -> str:
+    target = str(path_value or "").strip()
+    if not target:
+        return ""
+    if os.path.isabs(target):
+        return target
+    normalized = target.replace("/", os.sep).replace("\\", os.sep)
+    return os.path.join(PROJECT_ROOT, normalized)
+
+
 def _normalized_list(value: object, fallback: List[str]) -> List[str]:
     if isinstance(value, list):
         source = value
@@ -429,6 +454,8 @@ def get_pre_skip_reason(lead: dict, settings: dict, mode: str = "") -> str:
     demo_url = str(lead.get("demo_url", "")).strip()
     if not base_url:
         return "missing_base_url"
+    if not _is_http_url(base_url):
+        return "invalid_base_url"
     if not salon_name:
         return "missing_salon_name"
     mode_upper = str(mode or "").upper()
@@ -554,7 +581,9 @@ def build_cli_overrides(args: argparse.Namespace) -> Dict[str, object]:
 
 
 def _norm_key(value: str) -> str:
-    return str(value).strip().lower().replace(" ", "")
+    normalized = str(value or "").strip().lower()
+    normalized = normalized.replace("（", "(").replace("）", ")").replace("　", "")
+    return normalized.replace(" ", "")
 
 
 def _pick(row: dict, keys: List[str]) -> str:
@@ -569,50 +598,94 @@ def _pick(row: dict, keys: List[str]) -> str:
     return ""
 
 
+def _is_mock_mode(settings: dict) -> bool:
+    return _setting_bool(settings, "mock_mode", False) or _setting_bool(settings, "test_mode", False)
+
+
+def _looks_mock_salon_name(name: str) -> bool:
+    value = str(name or "").strip().lower()
+    return value.startswith("mock salon")
+
+
+def _looks_mock_demo_url(url: str) -> bool:
+    domain = extract_domain(str(url or ""))
+    return domain == "example.com" or domain.endswith(".example.com")
+
+
+def _is_http_url(value: str) -> bool:
+    return bool(re.match(r"^https?://", str(value or "").strip(), flags=re.IGNORECASE))
+
+
+def _reason_ja(reason: str, status: str = "") -> str:
+    reason_text = str(reason or "").strip()
+    status_text = str(status or "").strip().lower()
+    if status_text == "sent":
+        return "送信完了"
+    mapping = {
+        "invalid_base_url": "URL不正",
+        "missing_base_url": "URL未設定",
+        "missing_salon_name": "店名未設定",
+        "missing_demo_url": "デモURL未設定",
+        "no_contact_page": "問い合わせページなし",
+        "no_form_fields": "フォームなし",
+        "iframe_only_form": "フォームなし（iframeのみ）",
+        "no_submit_button": "送信ボタンなし",
+        "no_final_submit_button": "最終送信ボタンなし",
+        "timeout_contact": "問い合わせ探索タイムアウト",
+        "timeout_detect_form": "フォーム検出タイムアウト",
+        "timeout_fill": "フォーム入力タイムアウト",
+        "bot_protection": "ボット保護",
+        "captcha": "ボット保護（CAPTCHA）",
+        "requires_login": "ログイン必須",
+        "dead_site": "サイト接続不可",
+    }
+    if reason_text in mapping:
+        return mapping[reason_text]
+    if reason_text.startswith("no_form"):
+        return "フォームなし"
+    if reason_text.startswith("unfilled_required_fields"):
+        return "必須項目未入力"
+    if reason_text.startswith("fill_incomplete"):
+        return "入力不足"
+    if reason_text.startswith("domain_attempt_limit"):
+        return "同一ドメイン試行上限"
+    if reason_text.startswith("blocked_domain"):
+        return "ブロック対象ドメイン"
+    if reason_text.startswith("domain_cooldown"):
+        return "ドメインクールダウン中"
+    return reason_text
+
+
 def load_leads(path: str) -> List[dict]:
     leads: List[dict] = []
     if not os.path.exists(path):
         logging.error(f"[MAIN] leads file missing: {path}")
         return leads
 
+    generated_id_count = 0
     with open(path, "r", encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f)
-        for row in reader:
-            original_url = _pick(
-                row,
-                [
-                    "url(旧)",
-                    "url（旧）",
-                    "url旧",
-                    "url(old)",
-                    "URL",
-                    "old_url",
-                    "url",
-                    "website",
-                ],
-            )
+        for idx, row in enumerate(reader, 1):
+            lead_id = _pick(row, LEAD_ID_ALIASES)
+            if not lead_id:
+                lead_id = f"aidnet-{idx:04d}"
+                generated_id_count += 1
+            original_url = _pick(row, OLD_URL_ALIASES)
             lead = {
-                "id": _pick(row, ["id", "ID"]),
-                "salon_name": _pick(row, ["店名", "店舗名", "名称", "サロン名", "salon_name", "name"]),
+                "id": lead_id,
+                "salon_name": _pick(row, SALON_NAME_ALIASES + ["学校名", "school_name"]),
                 "url": original_url,
                 "original_url": original_url,
-                "demo_url": _pick(
-                    row,
-                    [
-                        "url(デモ)",
-                        "url(デモページ)",
-                        "url（デモページ）",
-                        "url（デモ）",
-                        "urlデモ",
-                        "demo_url",
-                        "url_demo",
-                        "demo",
-                    ],
-                ),
+                "demo_url": _pick(row, DEMO_URL_ALIASES),
             }
-            if lead["id"] and lead["salon_name"] and lead["url"]:
+            if lead["id"] and lead["salon_name"]:
                 leads.append(lead)
-    logging.info(f"[MAIN] loaded leads: {len(leads)}")
+    logging.info(
+        "[MAIN] loaded leads: %s (path=%s generated_ids=%s)",
+        len(leads),
+        path,
+        generated_id_count,
+    )
     return leads
 
 
@@ -631,6 +704,7 @@ def append_results(results: List[dict], date_str: str) -> str:
         "demo_url",
         "status",
         "message",
+        "reason_ja",
         "evidence",
         "confidence_level",
         "stop_state",
@@ -644,6 +718,8 @@ def append_results(results: List[dict], date_str: str) -> str:
         "notes",
     ]
     fieldnames = list(default_fields)
+    needs_header_upgrade = False
+    existing_rows: List[dict] = []
     if file_exists:
         try:
             with open(path, "r", encoding="utf-8-sig", newline="") as f:
@@ -655,8 +731,28 @@ def append_results(results: List[dict], date_str: str) -> str:
                         if col not in merged:
                             merged.append(col)
                     fieldnames = merged
+                    needs_header_upgrade = merged != list(header)
         except Exception:
             fieldnames = list(default_fields)
+            needs_header_upgrade = False
+
+    if file_exists and needs_header_upgrade:
+        try:
+            with open(path, "r", encoding="utf-8-sig", newline="") as f:
+                existing_rows = list(csv.DictReader(f))
+        except Exception:
+            existing_rows = []
+
+        for row in existing_rows:
+            if not str(row.get("reason_ja", "")).strip():
+                row["reason_ja"] = _reason_ja(str(row.get("message", "")), status=str(row.get("status", "")))
+
+        with open(path, "w", encoding="utf-8-sig", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+            writer.writeheader()
+            if existing_rows:
+                writer.writerows(existing_rows)
+
     mode = "a" if file_exists else "w"
     encoding = "utf-8" if file_exists else "utf-8-sig"
 
@@ -771,11 +867,15 @@ async def process_lead(
     date_str: str,
 ) -> dict:
     logger = logging.getLogger()
-    lead_id = lead["id"]
-    salon_name = lead["salon_name"]
-    base_url = lead["url"]
-    demo_url = lead["demo_url"]
+    lead_id = str(lead.get("id", "")).strip()
+    base_url = str(lead.get("url", "")).strip()
+    resolved = message_gen.resolve_lead_fields(lead)
+    salon_name = str(resolved.get("salon_name") or lead.get("salon_name", "")).strip()
+    demo_url = str(resolved.get("demo_url") or lead.get("demo_url", "")).strip()
+    lead["salon_name"] = salon_name
+    lead["demo_url"] = demo_url
     domain = extract_domain(base_url)
+    logger.info("Lead resolved: id=%s, salon_name=%s, demo_url=%s", lead_id, salon_name, demo_url)
     aggressive_skip = _setting_bool(settings, "aggressive_skip", False)
     skip_if_new_tabs_or_downloads = _setting_bool(settings, "skip_if_new_tabs_or_downloads", True)
     skip_if_requires_login = _setting_bool(settings, "skip_if_requires_login", True)
@@ -832,6 +932,26 @@ async def process_lead(
     }
 
     logger.info(f"[{lead_id}] start: {salon_name} ({base_url})")
+
+    if not _is_mock_mode(settings) and (_looks_mock_salon_name(salon_name) or _looks_mock_demo_url(demo_url)):
+        result["status"] = "prepared_review_needed"
+        result["message"] = "mock_placeholder_detected"
+        result["evidence"] = "resolved_lead_contains_mock_placeholder"
+        result["skipped_before_exploration"] = True
+        append_ledger(
+            {
+                "run_mode": mode,
+                "salon_id": lead_id,
+                "salon_name": salon_name,
+                "domain": domain,
+                "contact_url": "",
+                "final_step_url": "",
+                "status": "prepared_review_needed",
+                "reason": "mock_placeholder_detected",
+            },
+            path=LEDGER_PATH,
+        )
+        return result
 
     pre_skip_reason = get_pre_skip_reason(lead, settings, mode=mode)
     if pre_skip_reason:
@@ -1396,12 +1516,6 @@ async def process_lead(
             )
             return result
 
-        resolved = message_gen.resolve_lead_fields(lead)
-        salon_name = resolved.get("salon_name") or salon_name
-        demo_url = resolved.get("demo_url") or demo_url
-        if mode == "SEMI_AUTO":
-            logger.info(f"Resolved lead: id={lead_id}, salon_name={salon_name}, demo_url={demo_url}")
-
         message = message_gen.generate(salon_name, demo_url)
         message = message_gen.sanitize_message_for_legacy_encodings(message)
         subject = message_gen.generate_subject(salon_name)
@@ -1771,6 +1885,23 @@ async def run(settings_override: Optional[dict] = None) -> Dict:
 
     logger = setup_logging(log_format=settings.get("log_format", "text"))
     ensure_blocklist_files(DATA_DIR)
+    aidnet_path_raw = settings.get("aidnet_domain_list_path", DEFAULT_AIDNET_DOMAIN_LIST_PATH)
+    aidnet_path = _resolve_setting_path(str(aidnet_path_raw))
+    seed_stats = seed_blocklist_domains_from_csv(aidnet_path, data_dir=DATA_DIR)
+    if seed_stats.get("status") == "ok":
+        logger.info(
+            "[MAIN] aidnet domain list synced: added=%s valid_domains=%s invalid_url_rows=%s csv=%s",
+            seed_stats.get("added_count", 0),
+            seed_stats.get("valid_domain_count", 0),
+            seed_stats.get("invalid_url_rows", 0),
+            seed_stats.get("csv_path", aidnet_path),
+        )
+    elif seed_stats.get("status") != "file_missing":
+        logger.warning(
+            "[MAIN] aidnet domain list sync skipped: status=%s csv=%s",
+            seed_stats.get("status"),
+            seed_stats.get("csv_path", aidnet_path),
+        )
 
     now = datetime.now(JST)
     date_str = now.strftime("%Y%m%d")
@@ -1905,6 +2036,7 @@ async def run(settings_override: Optional[dict] = None) -> Dict:
                     "demo_url": result["demo_url"],
                     "status": result["status"],
                     "message": result["message"],
+                    "reason_ja": _reason_ja(result.get("message", ""), status=result.get("status", "")),
                     "evidence": result.get("evidence", ""),
                     "confidence_level": result.get("confidence_level", ""),
                     "stop_state": result.get("stop_state", ""),

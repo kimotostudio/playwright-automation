@@ -41,8 +41,11 @@ python src/main.py --mode SEMI_AUTO --semi-auto-verify --semi-auto-limit 5
 # verifyモードでプロンプト無効
 python src/main.py --mode SEMI_AUTO --semi-auto-verify --semi-auto-limit 5 --no-prompt
 
-# 対象CSVを実行時に差し替え
-python src/main.py --mode SEMI_AUTO --leads data/leads_test.csv
+# 対象CSVを実行時に差し替え（実データ）
+python src/main.py --mode SEMI_AUTO --leads data/leads.csv
+
+# モック検証用CSVを使う場合（明示的なmock運用）
+python src/main.py --mode SEMI_AUTO --leads data/leads_test.csv --test
 
 # レポートのみ表示（最新summary）
 python src/main.py --report-only
@@ -286,6 +289,8 @@ python src/resume_submit.py --salon-id 1100
 - `data/blocklist_domains.txt`
 - `data/blocklist_urls.txt`
 - `data/domain_cooldowns.json`
+- `aidnet_domain_list_path`（既定: `data/エイドネット_ドメインリスト - リスト_日本語学校.csv`）
+  - 起動時にCSVの`URL`列を読み取り、ドメインを`blocklist_domains.txt`へ自動同期
 
 bot保護検知（CAPTCHA / Cloudflare / verify human / HTTP 403/429）時:
 

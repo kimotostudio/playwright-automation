@@ -14,6 +14,11 @@ logger = logging.getLogger(__name__)
 JST = ZoneInfo("Asia/Tokyo")
 
 
+def _is_prepared_status(status: str) -> bool:
+    value = (status or "").strip().lower()
+    return value == "prepared" or value.startswith("prepared_")
+
+
 def generate_summary_report(
     results: List[dict],
     stats: dict,
@@ -29,9 +34,13 @@ def generate_summary_report(
     output_path = os.path.join(results_dir, f"summary_{date_str}.md")
 
     reason_counts = Counter()
+    skip_reason_counts = Counter()
     for row in results:
         reason = (row.get("message", "") or "unknown").strip()
         reason_counts[reason[:80] or "unknown"] += 1
+        status_value = (row.get("status", "") or "").strip().lower()
+        if status_value == "skipped" or status_value.startswith("skipped_"):
+            skip_reason_counts[reason[:80] or "unknown"] += 1
 
     lines = [
         f"# Daily Summary - {datetime.now(JST).strftime('%Y-%m-%d')}",
@@ -45,6 +54,9 @@ def generate_summary_report(
         f"| Prepared | {stats.get('prepared', 0)} |",
         f"| Failed | {stats.get('failed', 0)} |",
         f"| Skipped | {stats.get('skipped', 0)} |",
+        f"| Pages Visited | {stats.get('pages_visited', 0)} |",
+        f"| Candidate Contact Links Found | {stats.get('candidate_contact_links_found', 0)} |",
+        f"| Skipped Before Exploration | {stats.get('skipped_before_exploration', 0)} |",
         "",
     ]
 
@@ -58,6 +70,32 @@ def generate_summary_report(
             ]
         )
         for reason, count in reason_counts.most_common(10):
+            lines.append(f"| {reason.replace('|', '/')} | {count} |")
+        lines.append("")
+
+    if reason_counts:
+        lines.extend(
+            [
+                "## Reasons Histogram",
+                "",
+                "| Reason | Count |",
+                "|--------|-------|",
+            ]
+        )
+        for reason, count in sorted(reason_counts.items(), key=lambda x: (-x[1], x[0])):
+            lines.append(f"| {reason.replace('|', '/')} | {count} |")
+        lines.append("")
+
+    if skip_reason_counts:
+        lines.extend(
+            [
+                "## Top Skip Reasons",
+                "",
+                "| Reason | Count |",
+                "|--------|-------|",
+            ]
+        )
+        for reason, count in skip_reason_counts.most_common(10):
             lines.append(f"| {reason.replace('|', '/')} | {count} |")
         lines.append("")
 
@@ -126,6 +164,7 @@ def print_report_from_files(results_dir: str, data_dir: str) -> None:
     total = sent = failed = skipped = 0
     prepared = 0
     reasons = Counter()
+    skip_reasons = Counter()
     with open(results_csv, "r", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
         for row in reader:
@@ -133,14 +172,15 @@ def print_report_from_files(results_dir: str, data_dir: str) -> None:
             status = row.get("status", "")
             if status == "sent":
                 sent += 1
-            elif status == "prepared":
+            elif _is_prepared_status(status):
                 prepared += 1
             elif status == "failed":
                 failed += 1
                 reasons[row.get("message", "unknown")] += 1
-            elif status == "skipped":
+            elif status == "skipped" or str(status).startswith("skipped_"):
                 skipped += 1
                 reasons[row.get("message", "unknown")] += 1
+                skip_reasons[row.get("message", "unknown")] += 1
 
     # Read state
     state_path = os.path.join(data_dir, "state.json")
@@ -157,8 +197,12 @@ def print_report_from_files(results_dir: str, data_dir: str) -> None:
     print(f"Total sent (all time): {state.get('total_sent', '?')}")
 
     if reasons:
-        print("\nTop failure reasons:")
+        print("\nTop reasons:")
         for reason, count in reasons.most_common(5):
+            print(f"  [{count}x] {reason[:70]}")
+    if skip_reasons:
+        print("\nTop skip reasons:")
+        for reason, count in skip_reasons.most_common(5):
             print(f"  [{count}x] {reason[:70]}")
 
     # Check ledger

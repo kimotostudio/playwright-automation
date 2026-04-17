@@ -10,6 +10,7 @@ __pycache__/
 .venv/
 venv/
 env/
+.pytest_cache/
 
 # IDE
 .vscode/
@@ -29,11 +30,17 @@ data/operator_actions_*.csv
 data/domain_cooldowns.json
 data/blocklist_domains.txt
 data/blocklist_urls.txt
+data/*.bak_*
+data/*.bak
+data/*.xlsx
+data/*.xls
 
 # Outputs
 results/
 screenshots/
 logs/
+playwright-report/
+test-results/
 *.log
 
 # Spreadsheets and office temp

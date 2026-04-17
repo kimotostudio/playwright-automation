@@ -25,11 +25,11 @@ if [ "$1" == "--test" ]; then
     echo "Running in TEST MODE (limit: 2)"
     python -c "
 import json
-with open('config/settings.json', 'r') as f:
+with open('config/settings.json', 'r', encoding='utf-8') as f:
     s = json.load(f)
 s['test_mode'] = True
-with open('config/settings.json', 'w') as f:
-    json.dump(s, f, indent=2)
+with open('config/settings.json', 'w', encoding='utf-8') as f:
+    json.dump(s, f, ensure_ascii=False, indent=2)
 "
 fi
 
@@ -40,10 +40,10 @@ python src/main.py
 if [ "$1" == "--test" ]; then
     python -c "
 import json
-with open('config/settings.json', 'r') as f:
+with open('config/settings.json', 'r', encoding='utf-8') as f:
     s = json.load(f)
 s['test_mode'] = False
-with open('config/settings.json', 'w') as f:
-    json.dump(s, f, indent=2)
+with open('config/settings.json', 'w', encoding='utf-8') as f:
+    json.dump(s, f, ensure_ascii=False, indent=2)
 "
 fi

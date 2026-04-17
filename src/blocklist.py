@@ -2,16 +2,25 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import os
 from datetime import datetime, timedelta
-from typing import Tuple
+from typing import Dict, Tuple
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 JST = ZoneInfo("Asia/Tokyo")
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_DATA_DIR = os.path.join(PROJECT_ROOT, "data")
+DOMAIN_SEED_URL_ALIASES = [
+    "URL",
+    "url",
+    "website",
+    "site_url",
+    "url(旧)",
+    "old_url",
+]
 
 
 def extract_domain(url: str) -> str:
@@ -54,6 +63,106 @@ def _load_lines(path: str) -> set[str]:
                 if value and not value.startswith("#"):
                     rows.add(value)
     return rows
+
+
+def _normalize_key(value: str) -> str:
+    normalized = str(value or "").strip().lower()
+    normalized = normalized.replace("（", "(").replace("）", ")").replace("　", "")
+    return normalized.replace(" ", "")
+
+
+def _resolve_column(fieldnames: list[str] | None, aliases: list[str]) -> str:
+    names = list(fieldnames or [])
+    normalized = {_normalize_key(name): name for name in names}
+    for alias in aliases:
+        direct = next((name for name in names if name == alias), "")
+        if direct:
+            return direct
+        alt = normalized.get(_normalize_key(alias), "")
+        if alt:
+            return alt
+    return ""
+
+
+def _domain_from_url(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw.startswith(("http://", "https://")):
+        return ""
+    parsed = urlparse(raw)
+    domain = str(parsed.netloc or "").lower().strip()
+    if not domain:
+        return ""
+    if ":" in domain:
+        domain = domain.split(":", 1)[0]
+    if domain.startswith("www."):
+        domain = domain[4:]
+    return domain.strip(".")
+
+
+def seed_blocklist_domains_from_csv(
+    csv_path: str,
+    data_dir: str = DEFAULT_DATA_DIR,
+    url_aliases: list[str] | None = None,
+) -> Dict[str, object]:
+    """Import URL domains from a CSV file into blocklist_domains.txt."""
+    ensure_blocklist_files(data_dir)
+    domains_path, _, _ = _paths(data_dir)
+    target_csv = str(csv_path or "").strip()
+    if not target_csv:
+        return {"status": "file_missing", "csv_path": "", "added_count": 0}
+    if not os.path.exists(target_csv):
+        return {"status": "file_missing", "csv_path": target_csv, "added_count": 0}
+
+    aliases = list(url_aliases or DOMAIN_SEED_URL_ALIASES)
+    existing = _load_lines(domains_path)
+    to_add: set[str] = set()
+    valid_domains: set[str] = set()
+    invalid_url_rows = 0
+    nonempty_url_rows = 0
+    total_rows = 0
+
+    with open(target_csv, "r", encoding="utf-8-sig", newline="") as f:
+        reader = csv.DictReader(f)
+        url_column = _resolve_column(reader.fieldnames, aliases)
+        if not url_column:
+            return {
+                "status": "missing_url_column",
+                "csv_path": target_csv,
+                "added_count": 0,
+                "url_column": "",
+                "total_rows": 0,
+            }
+
+        for row in reader:
+            total_rows += 1
+            raw_url = str((row or {}).get(url_column, "")).strip()
+            if not raw_url:
+                continue
+            nonempty_url_rows += 1
+            domain = _domain_from_url(raw_url)
+            if not domain:
+                invalid_url_rows += 1
+                continue
+            valid_domains.add(domain)
+            if domain not in existing:
+                to_add.add(domain)
+                existing.add(domain)
+
+    if to_add:
+        with open(domains_path, "a", encoding="utf-8") as f:
+            for domain in sorted(to_add):
+                f.write(f"{domain}\n")
+
+    return {
+        "status": "ok",
+        "csv_path": target_csv,
+        "url_column": url_column,
+        "total_rows": total_rows,
+        "nonempty_url_rows": nonempty_url_rows,
+        "invalid_url_rows": invalid_url_rows,
+        "valid_domain_count": len(valid_domains),
+        "added_count": len(to_add),
+    }
 
 
 def _load_cooldowns(path: str) -> dict:

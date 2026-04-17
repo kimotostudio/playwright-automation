@@ -24,7 +24,21 @@ FIELDNAMES = [
     "confirm_selector",
     "screenshot_folder",
     "status",
+    "reason",
     "notes",
+    "evidence",
+    "detected_required_fields",
+    "filled_fields",
+    "missing_required_fields",
+    "validation_errors",
+    "decision",
+    "confidence_level",
+    "stop_state",
+    "detected_platform",
+    "reopen_in_browser_url",
+    "form_root_selector",
+    "field_selector_map",
+    "last_action",
 ]
 
 
@@ -117,6 +131,7 @@ def find_prepared_entry(
             row = rows[idx]
             if str(row.get("salon_id", "")).strip() != target:
                 continue
-            if str(row.get("status", "")).strip().lower() == "prepared":
+            status_value = str(row.get("status", "")).strip().lower()
+            if status_value == "prepared" or status_value.startswith("prepared_"):
                 return row, path
     return None, None

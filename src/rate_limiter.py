@@ -25,7 +25,7 @@ DEFAULT_STATE = {
 class RateLimiter:
     """Manages daily sent limits with atomic state updates."""
 
-    def __init__(self, state_path: str, daily_limit: int = 20, ledger_ids: Set[str] | None = None):
+    def __init__(self, state_path: str, daily_limit: int = 10, ledger_ids: Set[str] | None = None):
         self.state_path = state_path
         self.daily_limit = daily_limit
         self.ledger_ids = {str(x) for x in (ledger_ids or set())}

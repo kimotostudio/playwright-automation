@@ -22,7 +22,7 @@ if errorlevel 1 (
 REM Test mode
 if "%1"=="--test" (
     echo Running in TEST MODE (limit: 2)
-    python -c "import json; f=open('config/settings.json','r'); s=json.load(f); f.close(); s['test_mode']=True; f=open('config/settings.json','w'); json.dump(s,f,indent=2); f.close()"
+    python -c "import json; f=open('config/settings.json','r',encoding='utf-8'); s=json.load(f); f.close(); s['test_mode']=True; f=open('config/settings.json','w',encoding='utf-8'); json.dump(s,f,ensure_ascii=False,indent=2); f.close()"
 )
 
 REM Run
@@ -30,7 +30,7 @@ python src/main.py
 
 REM Reset test mode
 if "%1"=="--test" (
-    python -c "import json; f=open('config/settings.json','r'); s=json.load(f); f.close(); s['test_mode']=False; f=open('config/settings.json','w'); json.dump(s,f,indent=2); f.close()"
+    python -c "import json; f=open('config/settings.json','r',encoding='utf-8'); s=json.load(f); f.close(); s['test_mode']=False; f=open('config/settings.json','w',encoding='utf-8'); json.dump(s,f,ensure_ascii=False,indent=2); f.close()"
 )
 
 pause
