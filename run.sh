@@ -1,5 +1,5 @@
 #!/bin/bash
-# Spiritual Salon Automation - Daily Runner
+# Playwright Automation - Daily Runner
 # Usage: ./run.sh [--test]
 
 set -e

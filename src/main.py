@@ -1,4 +1,4 @@
-﻿"""Main execution module for spiritual salon outreach automation."""
+﻿"""Main execution module for review-first browser automation."""
 
 from __future__ import annotations
 
@@ -1910,7 +1910,7 @@ async def run(settings_override: Optional[dict] = None) -> Dict:
         mode = "SEMI_AUTO"
 
     logger.info("=" * 60)
-    logger.info("Spiritual Salon Automation")
+    logger.info("Playwright Automation")
     logger.info(f"Date: {now.strftime('%Y-%m-%d %H:%M:%S')} JST")
     logger.info(f"Mode: {mode}")
     logger.info("=" * 60)
@@ -2215,7 +2215,7 @@ async def run(settings_override: Optional[dict] = None) -> Dict:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Spiritual Salon Automation")
+    parser = argparse.ArgumentParser(description="Playwright Automation")
     parser.add_argument("--report-only", action="store_true", help="Print latest summary")
     parser.add_argument("--dry-run", action="store_true", help="Prepare only (no final submit)")
     parser.add_argument("--test", action="store_true", help="Test mode (limit=2)")

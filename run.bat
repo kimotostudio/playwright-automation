@@ -1,5 +1,5 @@
 @echo off
-REM Spiritual Salon Automation - Daily Runner (Windows)
+REM Playwright Automation - Daily Runner (Windows)
 REM Usage: run.bat [--test]
 
 cd /d "%~dp0"
