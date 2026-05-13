@@ -313,7 +313,7 @@ def fill_birth(page: Page, birth: str) -> bool:
 def resolve_prefill_payload(record: dict) -> dict:
     payload = {
         "name": "KIMOTO STUDIO",
-        "email": "kimoto.studio21@gmail.com",
+        "email": "sender@example.com",
         "birth": "1990-01-01",
     }
     for key in ("name", "email", "birth"):

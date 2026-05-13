@@ -17,9 +17,9 @@ def _build_generator(tmp_path: Path) -> MessageGenerator:
     sender_path.write_text(
         json.dumps(
             {
-                "name": "木許 裕輔",
-                "email": "kimoto.studio21@gmail.com",
-                "phone": "08042846455",
+                "name": "サンプル担当者",
+                "email": "sender@example.com",
+                "phone": "000-0000-0000",
                 "company": "KIMOTO STUDIO",
             },
             ensure_ascii=False,
@@ -53,6 +53,55 @@ def test_generate_message_contains_real_values(tmp_path: Path) -> None:
     assert "Mock Salon" not in message
 
 
+def test_generate_message_supports_handoff_context_placeholders(tmp_path: Path) -> None:
+    template_path = tmp_path / "template_context.txt"
+    sender_path = tmp_path / "sender_context.json"
+    template_path.write_text(
+        "{salon_name}\n{business_name}\n{company_name}\n{demo_url}\n{contact_url}\n{website}\n{missing_optional}",
+        encoding="utf-8",
+    )
+    sender_path.write_text(
+        json.dumps({"company": "KIMOTO STUDIO"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    mg = MessageGenerator(str(template_path), str(sender_path), wrap_message=False)
+
+    message = mg.generate(
+        "実サロン",
+        "https://demo.example.jp/a",
+        business_name="店舗A",
+        company_name="会社A",
+        contact_url="https://example.jp/contact",
+        website="https://example.jp/",
+    )
+
+    assert "実サロン" in message
+    assert "店舗A" in message
+    assert "会社A" in message
+    assert "https://demo.example.jp/a" in message
+    assert "https://example.jp/contact" in message
+    assert "https://example.jp/" in message
+    assert "{missing_optional}" not in message
+
+
+def test_missing_sender_info_file_uses_safe_blank_values(tmp_path: Path) -> None:
+    template_path = tmp_path / "template_missing_sender.txt"
+    sender_path = tmp_path / "missing_sender.json"
+    template_path.write_text(
+        "{salon_name}\n{demo_url}\nEmail: {email}\n{missing_optional}",
+        encoding="utf-8",
+    )
+    mg = MessageGenerator(str(template_path), str(sender_path), wrap_message=False)
+
+    message = mg.generate("実サロン", "https://demo.example.jp/a")
+
+    assert mg.sender_info == {}
+    assert "実サロン" in message
+    assert "https://demo.example.jp/a" in message
+    assert "{email}" not in message
+    assert "{missing_optional}" not in message
+
+
 def test_generate_subject_uses_sender_info_subject(tmp_path: Path) -> None:
     template_path = tmp_path / "template.txt"
     sender_path = tmp_path / "sender.json"
@@ -72,6 +121,24 @@ def test_generate_subject_uses_sender_info_subject(tmp_path: Path) -> None:
     )
     mg = MessageGenerator(str(template_path), str(sender_path), wrap_message=False)
     assert mg.generate_subject("任意名") == "おすすめの日本語学校に関する記事掲載につきまして"
+
+
+def test_generate_subject_supports_display_name_placeholder(tmp_path: Path) -> None:
+    template_path = tmp_path / "template.txt"
+    sender_path = tmp_path / "sender.json"
+    template_path.write_text("本文", encoding="utf-8")
+    sender_path.write_text(
+        json.dumps(
+            {
+                "company": "KIMOTO STUDIO",
+                "subject_template": "【ご確認】{display_name}様向けのWebデザイン案",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    mg = MessageGenerator(str(template_path), str(sender_path), wrap_message=False)
+    assert mg.generate_subject("古い名前", display_name="表示名A") == "【ご確認】表示名A様向けのWebデザイン案"
 
 
 def test_load_leads_header_mapping(tmp_path: Path) -> None:
@@ -118,6 +185,71 @@ def test_load_leads_header_mapping_fullwidth_variants(tmp_path: Path) -> None:
     assert leads[0]["demo_url"] == "https://demo.example.jp/9002"
 
 
+def test_load_leads_demo_handoff_aliases(tmp_path: Path) -> None:
+    csv_path = tmp_path / "handoff_with_demo_paths.csv"
+    with open(csv_path, "w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["lead_id", "business_name", "reference_url", "domain", "demo_path"],
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "lead_id": "lf-example-jp",
+                "business_name": "店舗C",
+                "reference_url": "https://example.jp/",
+                "domain": "example.jp",
+                "demo_path": "output/A/lf-example-jpA.html",
+            }
+        )
+
+    leads = load_leads(str(csv_path))
+    assert len(leads) == 1
+    assert leads[0]["id"] == "lf-example-jp"
+    assert leads[0]["salon_name"] == "店舗C"
+    assert leads[0]["url"] == "https://example.jp/"
+    assert leads[0]["demo_url"] == "output/A/lf-example-jpA.html"
+    assert leads[0]["business_name"] == "店舗C"
+    assert leads[0]["website"] == "https://example.jp/"
+
+
+def test_load_leads_prefers_contact_url_and_rejects_non_web(tmp_path: Path) -> None:
+    csv_path = tmp_path / "handoff_contact.csv"
+    with open(csv_path, "w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["id", "business_name", "website", "contact_url", "demo_url"],
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "id": "contact-first",
+                "business_name": "店舗D",
+                "website": "https://example.jp/",
+                "contact_url": "https://example.jp/contact",
+                "demo_url": "https://demo.example.jp/d",
+            }
+        )
+        writer.writerow(
+            {
+                "id": "non-web",
+                "business_name": "店舗E",
+                "website": "tel:092-000-0000",
+                "contact_url": "mailto:info@example.jp",
+                "demo_url": "https://demo.example.jp/e",
+            }
+        )
+
+    leads = load_leads(str(csv_path))
+    assert len(leads) == 2
+    assert leads[0]["url"] == "https://example.jp/contact"
+    assert leads[0]["original_url"] == "https://example.jp/"
+    assert leads[0]["contact_url"] == "https://example.jp/contact"
+    assert leads[0]["url_status"] == ""
+    assert leads[1]["url"] == ""
+    assert leads[1]["url_status"] == "invalid_url"
+
+
 def test_load_leads_aidnet_style_without_id(tmp_path: Path) -> None:
     csv_path = tmp_path / "aidnet_like.csv"
     with open(csv_path, "w", encoding="utf-8-sig", newline="") as f:
@@ -133,7 +265,8 @@ def test_load_leads_aidnet_style_without_id(tmp_path: Path) -> None:
     assert leads[0]["url"] == "https://school-a.example.jp/"
     assert leads[1]["id"] == "aidnet-0002"
     assert leads[1]["salon_name"] == "日本語学校B"
-    assert leads[1]["url"] == "学校B公式"
+    assert leads[1]["url"] == ""
+    assert leads[1]["url_status"] == "invalid_url"
 
 
 def test_wrap_keeps_url_unbroken_and_name_present(tmp_path: Path) -> None:
@@ -147,9 +280,9 @@ def test_wrap_keeps_url_unbroken_and_name_present(tmp_path: Path) -> None:
     sender_path.write_text(
         json.dumps(
             {
-                "name": "木許 裕輔",
-                "email": "kimoto.studio21@gmail.com",
-                "phone": "08042846455",
+                "name": "サンプル担当者",
+                "email": "sender@example.com",
+                "phone": "000-0000-0000",
                 "company": "KIMOTO STUDIO",
             },
             ensure_ascii=False,
@@ -178,9 +311,9 @@ def test_sanitize_message_for_legacy_encodings_preserves_url(tmp_path: Path) -> 
     sender_path.write_text(
         json.dumps(
             {
-                "name": "木許 裕輔",
-                "email": "kimoto.studio21@gmail.com",
-                "phone": "08042846455",
+                "name": "サンプル担当者",
+                "email": "sender@example.com",
+                "phone": "000-0000-0000",
                 "company": "KIMOTO STUDIO",
             },
             ensure_ascii=False,

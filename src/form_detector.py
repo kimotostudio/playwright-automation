@@ -112,13 +112,14 @@ EXTERNAL_FORM_DISCOVERY_HINTS = [
     "typeform",
 ]
 
-# Name filling fallback policy (override via sender_info.json)
-DISPLAY_NAME = "営業担当"
-SURNAME = "営業"
-GIVEN_NAME = "担当"
-COMPANY_NAME = "会社名"
-FURIGANA_SEI = "エイギョウ"
-FURIGANA_MEI = "タントウ"
+# Public placeholder fallback policy. Real sender details belong only in the
+# ignored local config/sender_info.json file.
+DISPLAY_NAME = "担当者"
+SURNAME = "担当"
+GIVEN_NAME = "者"
+COMPANY_NAME = "KIMOTO STUDIO"
+FURIGANA_SEI = "タントウ"
+FURIGANA_MEI = "シャ"
 
 REQUIRED_MARKERS = ("必須", "*", "＊")
 REQUIRED_TEXT_MARKERS = ("必須", "*", "＊", "required", "Required")
@@ -150,9 +151,9 @@ JST = ZoneInfo("Asia/Tokyo")
 
 FIELD_PATTERNS = {
     "name": {
-        "labels": ["お名前", "氏名", "ご氏名", "名前", "Name", "name"],
-        "attributes": ["name", "your-name", "customer-name", "fullname", "your_name", "onamae"],
-        "placeholders": ["お名前", "氏名", "Name", "フルネーム"],
+        "labels": ["お名前", "氏名", "ご氏名", "名前", "担当者名", "Name", "name", "Full Name"],
+        "attributes": ["name", "your-name", "customer-name", "fullname", "full-name", "your_name", "onamae"],
+        "placeholders": ["お名前", "氏名", "名前", "Name", "Full Name", "フルネーム"],
     },
     "name_sei": {
         "labels": ["姓", "氏", "苗字", "Last Name", "last name", "Family Name"],
@@ -180,13 +181,13 @@ FIELD_PATTERNS = {
         "placeholders": ["メイ", "名フリガナ"],
     },
     "email": {
-        "labels": ["メール", "メールアドレス", "E-mail", "e-mail", "Email", "email"],
-        "attributes": ["email", "your-email", "mail", "e-mail", "your_email"],
-        "placeholders": ["メールアドレス", "example@example.com", "Email", "email"],
+        "labels": ["メール", "メールアドレス", "メールアドレス（確認）", "E-mail", "e-mail", "Email", "email", "Mail Address"],
+        "attributes": ["email", "your-email", "mail", "e-mail", "your_email", "mailaddress", "mail-address"],
+        "placeholders": ["メールアドレス", "example@example.com", "Email", "email", "mail@example.com"],
     },
     "phone": {
-        "labels": ["電話", "TEL", "tel", "携帯", "連絡先", "電話番号"],
-        "attributes": ["tel", "phone", "telephone", "your-tel", "your_phone", "mobile"],
+        "labels": ["電話", "TEL", "tel", "携帯", "連絡先", "電話番号", "Phone", "Phone Number"],
+        "attributes": ["tel", "phone", "telephone", "your-tel", "your_phone", "mobile", "phone-number"],
         "placeholders": ["電話番号", "090-1234-5678", "TEL", "携帯"],
     },
     "subject": {
@@ -197,15 +198,21 @@ FIELD_PATTERNS = {
     "message": {
         "labels": [
             "お問い合わせ内容",
+            "お問い合わせ",
+            "問い合わせ内容",
             "ご相談内容",
+            "相談内容",
+            "ご質問",
             "内容",
             "メッセージ",
             "本文",
+            "備考",
             "message",
             "Message",
+            "Comments",
         ],
-        "attributes": ["message", "your-message", "content", "body", "inquiry", "your_message", "comment"],
-        "placeholders": ["お問い合わせ内容", "ご相談内容", "メッセージ", "本文", "Message"],
+        "attributes": ["message", "your-message", "content", "body", "inquiry", "your_message", "comment", "comments", "description"],
+        "placeholders": ["お問い合わせ内容", "問い合わせ内容", "ご相談内容", "メッセージ", "本文", "Message", "Comments"],
     },
     "company": {
         "labels": ["会社名", "屋号", "企業名", "organization", "company", "法人名"],
@@ -374,7 +381,9 @@ class FormDetector:
             if await target.is_disabled():
                 return False
             tag = (await target.evaluate("el => el.tagName.toLowerCase()"))
-            if tag not in {"input", "textarea", "select"}:
+            is_editable = (await target.get_attribute("contenteditable") or "").lower() == "true"
+            role = (await target.get_attribute("role") or "").lower()
+            if tag not in {"input", "textarea", "select"} and not is_editable and role != "textbox":
                 return False
             if tag == "input":
                 input_type = ((await target.get_attribute("type")) or "text").lower()
@@ -983,7 +992,7 @@ class FormDetector:
 
         # Strategy 6: field type fallback.
         fallback_map = {
-            "message": "textarea:visible",
+            "message": "textarea:visible, [contenteditable='true']:visible, [role='textbox']:visible",
             "email": "input[type='email']:visible",
             "phone": "input[type='tel']:visible",
         }

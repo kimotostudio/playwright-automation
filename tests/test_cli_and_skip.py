@@ -8,6 +8,7 @@ from src.main import (
     build_cli_overrides,
     get_pre_skip_reason,
     get_skip_reason,
+    normalize_web_url,
     should_skip_exception,
 )
 
@@ -50,6 +51,27 @@ def test_verify_flags_and_overrides() -> None:
     assert overrides["semi_auto_prompt"] is False
     assert overrides["daily_limit"] == 100
     assert overrides["leads_csv_path"] == "data/leads.csv"
+
+
+def test_input_alias_sets_leads_csv_path() -> None:
+    args = argparse.Namespace(
+        dry_run=False,
+        test=False,
+        mode="SEMI_AUTO",
+        semi_auto_verify=True,
+        semi_auto_limit=1,
+        no_prompt=True,
+        limit=1,
+        leads=None,
+        input="../demo-generator/output/handoff_with_demo_paths.csv",
+    )
+    overrides = build_cli_overrides(args)
+
+    assert overrides["mode"] == "SEMI_AUTO"
+    assert overrides["semi_auto_verify"] is True
+    assert overrides["semi_auto_limit"] == 1
+    assert overrides["daily_limit"] == 1
+    assert overrides["leads_csv_path"] == "../demo-generator/output/handoff_with_demo_paths.csv"
 
 
 def test_skip_reason_domain_suffix_match() -> None:
@@ -127,7 +149,7 @@ def test_should_skip_exception_aggressive() -> None:
 def test_pre_skip_reason_missing_base_url() -> None:
     lead = {"id": "1", "salon_name": "A", "url": "", "demo_url": "https://demo.example.com"}
     reason = get_pre_skip_reason(lead, {}, mode="SEMI_AUTO")
-    assert reason == "missing_base_url"
+    assert reason == "no_contact_url"
 
 
 def test_pre_skip_reason_missing_salon_name() -> None:
@@ -137,9 +159,19 @@ def test_pre_skip_reason_missing_salon_name() -> None:
 
 
 def test_pre_skip_reason_invalid_base_url() -> None:
-    lead = {"id": "1", "salon_name": "A", "url": "学校A公式", "demo_url": ""}
+    lead = {"id": "1", "salon_name": "A", "url": "", "demo_url": "", "url_status": "invalid_url"}
     reason = get_pre_skip_reason(lead, {}, mode="FULL_AUTO")
-    assert reason == "invalid_base_url"
+    assert reason == "invalid_url"
+
+
+def test_normalize_web_url_rejects_non_web_schemes() -> None:
+    assert normalize_web_url("tel:092-000-0000") == ""
+    assert normalize_web_url("mailto:test@example.com") == ""
+    assert normalize_web_url("line://ti/p/example") == ""
+    assert normalize_web_url("javascript:alert(1)") == ""
+    assert normalize_web_url("data:text/plain,hello") == ""
+    assert normalize_web_url("www.example.jp/contact") == "https://www.example.jp/contact"
+    assert normalize_web_url("https://example.jp/contact") == "https://example.jp/contact"
 
 
 def test_mock_placeholder_detectors() -> None:

@@ -13,16 +13,24 @@ import re
 import sys
 from datetime import datetime
 from contextlib import suppress
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
-from playwright.async_api import Locator, Page, async_playwright
+try:
+    from playwright.async_api import Locator, Page, async_playwright
+except ModuleNotFoundError:
+    Locator = Any  # type: ignore[assignment]
+    Page = Any  # type: ignore[assignment]
+    async_playwright = None
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
 from src.blocklist import block_domain, ensure_blocklist_files, extract_domain, is_blocked, seed_blocklist_domains_from_csv
-from src.form_detector import FormDetector
+try:
+    from src.form_detector import FormDetector
+except ModuleNotFoundError:
+    FormDetector = None
 from src.ledger import append_ledger as _append_ledger, ledger_has, read_ledger
 from src.message_generator import MessageGenerator
 from src.rate_limiter import RateLimiter
@@ -117,8 +125,37 @@ SKIPPED_STATUSES = {
     "skipped_dead_site",
 }
 
-SALON_NAME_ALIASES = ["店名", "名称", "サロン名", "店舗名", "salon_name", "name"]
-OLD_URL_ALIASES = ["url(旧)", "url（旧）", "url旧", "url(old)", "URL", "old_url", "url", "website"]
+SALON_NAME_ALIASES = [
+    "店名",
+    "名称",
+    "サロン名",
+    "店舗名",
+    "salon_name",
+    "display_name",
+    "business_name",
+    "brand_name",
+    "company_name",
+    "name",
+]
+CONTACT_URL_ALIASES = [
+    "contact_url",
+    "contact_page",
+    "original__contact_url",
+    "original__form_url",
+]
+WEBSITE_URL_ALIASES = [
+    "url(旧)",
+    "url（旧）",
+    "url旧",
+    "url(old)",
+    "URL",
+    "old_url",
+    "url",
+    "website",
+    "reference_url",
+    "original__url",
+]
+OLD_URL_ALIASES = WEBSITE_URL_ALIASES + CONTACT_URL_ALIASES
 DEMO_URL_ALIASES = [
     "url(デモ)",
     "url(デモページ)",
@@ -127,9 +164,13 @@ DEMO_URL_ALIASES = [
     "urlデモ",
     "demo_url",
     "url_demo",
+    "demo_path",
     "demo",
 ]
 LEAD_ID_ALIASES = ["id", "ID", "lead_id", "leadid", "管理番号"]
+MESSAGE_ALIASES = ["message", "本文", "outreach_message"]
+MESSAGE_PATH_ALIASES = ["message_path", "outreach_message_path"]
+NON_WEB_SCHEMES = ("tel:", "mailto:", "line:", "sms:", "javascript:", "data:")
 
 
 def is_prepared_status(status: str) -> bool:
@@ -450,10 +491,13 @@ def _setting_int(settings: dict, key: str, default: int) -> int:
 
 def get_pre_skip_reason(lead: dict, settings: dict, mode: str = "") -> str:
     base_url = str(lead.get("url", "")).strip()
+    url_status = str(lead.get("url_status", "")).strip()
     salon_name = str(lead.get("salon_name", "")).strip()
     demo_url = str(lead.get("demo_url", "")).strip()
+    if url_status in {"no_contact_url", "invalid_url"}:
+        return url_status
     if not base_url:
-        return "missing_base_url"
+        return "no_contact_url"
     if not _is_http_url(base_url):
         return "invalid_base_url"
     if not salon_name:
@@ -575,8 +619,9 @@ def build_cli_overrides(args: argparse.Namespace) -> Dict[str, object]:
         overrides["semi_auto_prompt"] = not args.no_prompt
     if args.limit is not None:
         overrides["daily_limit"] = int(args.limit)
-    if args.leads:
-        overrides["leads_csv_path"] = str(args.leads)
+    leads_path = args.leads or getattr(args, "input", None)
+    if leads_path:
+        overrides["leads_csv_path"] = str(leads_path)
     return overrides
 
 
@@ -596,6 +641,35 @@ def _pick(row: dict, keys: List[str]) -> str:
         if alt is not None and str(alt).strip():
             return str(alt).strip()
     return ""
+
+
+def normalize_web_url(value: str) -> str:
+    target = str(value or "").strip()
+    if not target:
+        return ""
+    lowered = target.lower()
+    if lowered.startswith(NON_WEB_SCHEMES):
+        return ""
+    if re.match(r"^https?://", target, flags=re.IGNORECASE):
+        return target
+    if target.startswith("www."):
+        return f"https://{target}"
+    return ""
+
+
+def resolve_target_url(row: dict) -> tuple[str, str, str, str]:
+    contact_raw = _pick(row, CONTACT_URL_ALIASES)
+    website_raw = _pick(row, WEBSITE_URL_ALIASES)
+    contact_url = normalize_web_url(contact_raw)
+    website_url = normalize_web_url(website_raw)
+
+    if contact_url:
+        return contact_url, website_url or contact_url, contact_raw, ""
+    if website_url:
+        return website_url, website_url, contact_raw, ""
+    if contact_raw or website_raw:
+        return "", website_raw or contact_raw, contact_raw, "invalid_url"
+    return "", "", "", "no_contact_url"
 
 
 def _is_mock_mode(settings: dict) -> bool:
@@ -623,10 +697,13 @@ def _reason_ja(reason: str, status: str = "") -> str:
         return "送信完了"
     mapping = {
         "invalid_base_url": "URL不正",
+        "invalid_url": "URL不正",
+        "no_contact_url": "問い合わせURL未設定",
         "missing_base_url": "URL未設定",
         "missing_salon_name": "店名未設定",
         "missing_demo_url": "デモURL未設定",
         "no_contact_page": "問い合わせページなし",
+        "no_form_found": "フォームなし",
         "no_form_fields": "フォームなし",
         "iframe_only_form": "フォームなし（iframeのみ）",
         "no_submit_button": "送信ボタンなし",
@@ -638,6 +715,12 @@ def _reason_ja(reason: str, status: str = "") -> str:
         "captcha": "ボット保護（CAPTCHA）",
         "requires_login": "ログイン必須",
         "dead_site": "サイト接続不可",
+        "sales_prohibited": "営業禁止",
+        "corporate_skipped": "法人/対象外",
+        "unsupported_form": "未対応フォーム",
+        "prepared_no_submit": "送信前停止",
+        "manual_review_needed": "手動確認",
+        "error": "エラー",
     }
     if reason_text in mapping:
         return mapping[reason_text]
@@ -670,13 +753,24 @@ def load_leads(path: str) -> List[dict]:
             if not lead_id:
                 lead_id = f"aidnet-{idx:04d}"
                 generated_id_count += 1
-            original_url = _pick(row, OLD_URL_ALIASES)
+            target_url, original_url, contact_url, url_status = resolve_target_url(row)
             lead = {
                 "id": lead_id,
                 "salon_name": _pick(row, SALON_NAME_ALIASES + ["学校名", "school_name"]),
-                "url": original_url,
+                "display_name": _pick(row, ["display_name", "表示名"]),
+                "business_name": _pick(row, ["business_name", "brand_name"]),
+                "company_name": _pick(row, ["company_name", "会社名", "法人名"]),
+                "url": target_url,
+                "website": original_url,
                 "original_url": original_url,
+                "contact_url": contact_url,
                 "demo_url": _pick(row, DEMO_URL_ALIASES),
+                "domain": _pick(row, ["domain", "original__domain"]) or extract_domain(target_url),
+                "message": _pick(row, MESSAGE_ALIASES),
+                "message_path": _pick(row, MESSAGE_PATH_ALIASES),
+                "source_status": _pick(row, ["status"]),
+                "source_reason": _pick(row, ["reason"]),
+                "url_status": url_status,
             }
             if lead["id"] and lead["salon_name"]:
                 leads.append(lead)
@@ -870,9 +964,11 @@ async def process_lead(
     lead_id = str(lead.get("id", "")).strip()
     base_url = str(lead.get("url", "")).strip()
     resolved = message_gen.resolve_lead_fields(lead)
-    salon_name = str(resolved.get("salon_name") or lead.get("salon_name", "")).strip()
+    display_name = str(resolved.get("display_name") or lead.get("display_name") or lead.get("salon_name", "")).strip()
+    salon_name = str(resolved.get("salon_name") or display_name or lead.get("salon_name", "")).strip()
     demo_url = str(resolved.get("demo_url") or lead.get("demo_url", "")).strip()
     lead["salon_name"] = salon_name
+    lead["display_name"] = display_name
     lead["demo_url"] = demo_url
     domain = extract_domain(base_url)
     logger.info("Lead resolved: id=%s, salon_name=%s, demo_url=%s", lead_id, salon_name, demo_url)
@@ -1516,9 +1612,24 @@ async def process_lead(
             )
             return result
 
-        message = message_gen.generate(salon_name, demo_url)
+        message = message_gen.generate(
+            salon_name,
+            demo_url,
+            display_name=display_name,
+            business_name=lead.get("business_name", ""),
+            company_name=lead.get("company_name", ""),
+            contact_url=contact_url,
+            website=lead.get("website", "") or lead.get("original_url", ""),
+            old_url=lead.get("original_url", ""),
+            url=lead.get("url", ""),
+        )
         message = message_gen.sanitize_message_for_legacy_encodings(message)
-        subject = message_gen.generate_subject(salon_name)
+        subject = message_gen.generate_subject(
+            salon_name,
+            display_name=display_name,
+            business_name=lead.get("business_name", ""),
+            company_name=lead.get("company_name", ""),
+        )
         try:
             fill_ok, fill_stats = await asyncio.wait_for(
                 detector.fill_form(fields, message, subject),
@@ -1696,7 +1807,8 @@ async def process_lead(
         # SEMI_AUTO: never final submit
         if mode == "SEMI_AUTO" or settings.get("dry_run", False):
             confirm_shot = ""
-            if is_confirm_step:
+            allow_confirm_click = _setting_bool(settings, "semi_auto_allow_confirm_click", False)
+            if is_confirm_step and allow_confirm_click:
                 await submit_btn.click()
                 with suppress(Exception):
                     await page.wait_for_load_state("domcontentloaded", timeout=5000)
@@ -1722,7 +1834,14 @@ async def process_lead(
                 os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
                 confirm_shot = os.path.join(SCREENSHOTS_DIR, f"{lead_id}_confirm.png")
                 await page.screenshot(path=confirm_shot, full_page=True)
-                logger.info(f"[{lead_id}] SEMI_AUTO: stopped before submit")
+                if is_confirm_step:
+                    result["confirm_selector"] = submit_selector
+                    logger.info(
+                        "[%s] SEMI_AUTO: confirmation-like button found but not clicked; stopped before any submit-like click",
+                        lead_id,
+                    )
+                else:
+                    logger.info(f"[{lead_id}] SEMI_AUTO: stopped before submit")
 
             confirm_text = await page.inner_text("body")
             failed_fields = []
@@ -1987,6 +2106,11 @@ async def run(settings_override: Optional[dict] = None) -> Dict:
             if rid:
                 existing_prepared_ids.add(rid)
 
+    if async_playwright is None:
+        raise RuntimeError("Playwright is not installed. Run `pip install -r requirements.txt` before browser automation.")
+    if FormDetector is None:
+        raise RuntimeError("Playwright form detection dependencies are not installed. Run `pip install -r requirements.txt`.")
+
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=headless)
         context = await browser.new_context(
@@ -2225,6 +2349,7 @@ def main() -> None:
     parser.add_argument("--no-prompt", action="store_true", help="Disable SEMI_AUTO next-lead prompt")
     parser.add_argument("--limit", type=int, help="Override daily_limit for this run")
     parser.add_argument("--leads", help="Override leads CSV path for this run")
+    parser.add_argument("--input", help="Alias for --leads; useful for pipeline handoff CSVs")
     args = parser.parse_args()
 
     if args.report_only:

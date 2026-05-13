@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import textwrap
 from typing import Dict
@@ -13,6 +14,13 @@ logger = logging.getLogger(__name__)
 SEPARATOR = "────────────────"
 URL_RE = re.compile(r"https?://[^\s]+")
 SEPARATOR_RE = re.compile(r"^[\s\-_=*/・／─—–―]+$")
+
+
+class SafeFormatDict(dict):
+    """Format missing optional template fields as blank strings."""
+
+    def __missing__(self, key: str) -> str:
+        return ""
 
 
 class MessageGenerator:
@@ -39,9 +47,12 @@ class MessageGenerator:
         return template
 
     def _load_sender_info(self, path: str) -> dict:
+        if not path or not os.path.exists(path):
+            logger.warning("[MESSAGE] Sender info config missing; using safe blank sender fields")
+            return {}
         with open(path, "r", encoding="utf-8-sig") as f:
             info = json.load(f)
-        logger.info(f"[MESSAGE] Sender info loaded: {info.get('company', 'unknown')}")
+        logger.info("[MESSAGE] Sender info loaded")
         return info
 
     @staticmethod
@@ -174,23 +185,63 @@ class MessageGenerator:
 
     def resolve_lead_fields(self, row: dict) -> Dict[str, str]:
         """Resolve lead fields from row with robust Japanese header fallbacks."""
-        salon_name = self._pick_field(row, ["店名", "名称", "サロン名", "店舗名", "salon_name", "name"])
+        business_name = self._pick_field(row, ["business_name", "brand_name", "店名", "名称", "サロン名", "店舗名"])
+        company_name = self._pick_field(row, ["company_name", "会社名", "法人名"])
+        display_name = self._pick_field(row, ["display_name", "表示名"])
+        salon_name = self._pick_field(
+            row,
+            [
+                "display_name",
+                "表示名",
+                "店名",
+                "名称",
+                "サロン名",
+                "店舗名",
+                "salon_name",
+                "business_name",
+                "brand_name",
+                "company_name",
+                "name",
+            ],
+        )
         demo_url = self._pick_field(
             row,
-            ["url(デモ)", "url(デモページ)", "url（デモ）", "url（デモページ）", "demo_url", "url_demo"],
+            ["url(デモ)", "url(デモページ)", "url（デモ）", "url（デモページ）", "demo_url", "url_demo", "demo_path"],
         )
-        old_url = self._pick_field(row, ["url(旧)", "URL", "url", "url（旧）", "old_url"])
+        contact_url = self._pick_field(row, ["contact_url", "contact_page", "original__contact_url", "original__form_url"])
+        old_url = self._pick_field(row, ["url(旧)", "URL", "url", "url（旧）", "old_url", "website", "reference_url"])
+        website = self._pick_field(row, ["website", "reference_url", "url", "URL", "url(旧)", "url（旧）", "old_url"])
         return {
             "salon_name": salon_name,
+            "display_name": display_name or salon_name,
+            "business_name": business_name or salon_name,
+            "company_name": company_name,
             "demo_url": demo_url,
+            "contact_url": contact_url,
             "old_url": old_url,
+            "website": website or old_url,
         }
 
-    def generate(self, salon_name: str, demo_url: str) -> str:
-        message = self.template.format(
-            salon_name=salon_name,
-            demo_url=demo_url,
+    def generate(self, salon_name: str, demo_url: str, **fields: str) -> str:
+        values = SafeFormatDict(
+            {
+                "salon_name": str(salon_name or "").strip(),
+                "display_name": str(fields.get("display_name") or salon_name or "").strip(),
+                "business_name": str(fields.get("business_name") or salon_name or "").strip(),
+                "company_name": str(fields.get("company_name") or "").strip(),
+                "demo_url": str(demo_url or "").strip(),
+                "contact_url": str(fields.get("contact_url") or "").strip(),
+                "website": str(fields.get("website") or fields.get("old_url") or fields.get("url") or "").strip(),
+                "old_url": str(fields.get("old_url") or fields.get("website") or fields.get("url") or "").strip(),
+                "url": str(fields.get("url") or fields.get("website") or fields.get("old_url") or "").strip(),
+            }
         )
+        for key, value in fields.items():
+            values[str(key)] = str(value or "").strip()
+        for key, value in self.sender_info.items():
+            values.setdefault(str(key), str(value or "").strip())
+
+        message = self.template.format_map(values)
         message = self._format_message(message)
         message = self.sanitize_message_for_legacy_encodings(message)
         if self.debug:
@@ -203,14 +254,28 @@ class MessageGenerator:
         )
         return message
 
-    def generate_subject(self, salon_name: str) -> str:
+    def generate_subject(self, salon_name: str, **fields: str) -> str:
+        values = SafeFormatDict(
+            {
+                "salon_name": str(salon_name or "").strip(),
+                "display_name": str(fields.get("display_name") or salon_name or "").strip(),
+                "business_name": str(fields.get("business_name") or salon_name or "").strip(),
+                "company_name": str(fields.get("company_name") or "").strip(),
+            }
+        )
+        for key, value in fields.items():
+            values[str(key)] = str(value or "").strip()
+        for key, value in self.sender_info.items():
+            values.setdefault(str(key), str(value or "").strip())
+
         subject_template = str(self.sender_info.get("subject_template") or self.sender_info.get("subject") or "").strip()
         if subject_template:
             try:
-                return subject_template.format(salon_name=salon_name)
+                return subject_template.format_map(values)
             except Exception:
                 return subject_template
-        return f"【ご確認】{salon_name}様向けのWebデザイン案"
+        display_name = values.get("display_name") or values.get("salon_name") or ""
+        return f"【ご確認】{display_name}様向けのWebデザイン案"
 
     def get_sender_field(self, field: str) -> str:
         return self.sender_info.get(field, "")

@@ -182,7 +182,7 @@ def _load_leads_lookup(path: Path) -> Dict[str, dict]:
                 continue
             out[lead_id] = {
                 "id": lead_id,
-                "salon_name": _pick(row, ["店名", "店舗名", "名称", "サロン名", "salon_name", "name"]),
+                "salon_name": _pick(row, ["display_name", "表示名", "店名", "店舗名", "名称", "サロン名", "salon_name", "name"]),
                 "url": _pick(row, ["url(旧)", "url（旧）", "URL", "url", "old_url"]),
                 "demo_url": _pick(row, ["url(デモ)", "url(デモページ)", "url（デモ）", "demo_url", "url_demo"]),
             }
@@ -492,14 +492,25 @@ async def _run_prefill(args: argparse.Namespace) -> PrefillResult:
     )
     lead_for_message = {
         "店名": lead_row.get("salon_name", "") or row.get("salon_name", ""),
+        "display_name": lead_row.get("display_name", "") or row.get("display_name", "") or lead_row.get("salon_name", ""),
         "url(デモ)": lead_row.get("demo_url", ""),
         "url(旧)": lead_row.get("url", "") or contact_url or target_url,
+        "contact_url": contact_url,
+        "website": lead_row.get("url", "") or target_url,
     }
     resolved = msg_gen.resolve_lead_fields(lead_for_message)
-    salon_name = str(resolved.get("salon_name") or row.get("salon_name") or lead_row.get("salon_name") or salon_id).strip()
+    display_name = str(resolved.get("display_name") or row.get("display_name") or lead_row.get("salon_name") or salon_id).strip()
+    salon_name = str(resolved.get("salon_name") or display_name or row.get("salon_name") or lead_row.get("salon_name") or salon_id).strip()
     demo_url = str(resolved.get("demo_url") or "").strip()
-    message = msg_gen.generate(salon_name, demo_url)
-    subject = msg_gen.generate_subject(salon_name)
+    message = msg_gen.generate(
+        salon_name,
+        demo_url,
+        display_name=display_name,
+        contact_url=contact_url,
+        website=lead_row.get("url", "") or target_url,
+        old_url=lead_row.get("url", "") or target_url,
+    )
+    subject = msg_gen.generate_subject(salon_name, display_name=display_name)
 
     result = PrefillResult(
         salon_id=salon_id,
@@ -701,8 +712,9 @@ async def _run_prefill(args: argparse.Namespace) -> PrefillResult:
                                     result.stop_state = "submit_button"
                                     result.final_step_url = page.url
 
-                                    # Confirmation step is allowed; final submit is never clicked.
-                                    if is_confirm_step and submit_btn:
+                                    # Confirmation click is opt-in; final submit is never clicked.
+                                    allow_confirm_click = bool(settings.get("semi_auto_allow_confirm_click", False))
+                                    if is_confirm_step and submit_btn and allow_confirm_click:
                                         await submit_btn.click()
                                         await page.wait_for_load_state("domcontentloaded", timeout=min(timeout_sec, 10) * 1000)
                                         final_btn, _final_selector, _ = await detector.find_submit_button()
@@ -712,6 +724,8 @@ async def _run_prefill(args: argparse.Namespace) -> PrefillResult:
                                         result.stopped_at = "confirmation"
                                         result.stop_state = "confirmation"
                                         result.final_step_url = page.url
+                                    elif is_confirm_step and submit_btn:
+                                        result.reason = "prepared_no_submit"
 
                                     if not submit_btn:
                                         result.status = "prepared_review_needed"

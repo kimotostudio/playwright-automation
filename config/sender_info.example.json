@@ -1,0 +1,12 @@
+{
+  "display_name": "サンプル担当者",
+  "name": "サンプル担当者",
+  "surname": "サンプル",
+  "given_name": "担当者",
+  "furigana_sei": "サンプル",
+  "furigana_mei": "タントウシャ",
+  "email": "sender@example.com",
+  "phone": "000-0000-0000",
+  "company": "KIMOTO STUDIO",
+  "subject_template": "【ご確認】{display_name}様向けのWebデザイン案"
+}
