@@ -11,6 +11,8 @@ __pycache__/
 venv/
 env/
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
 # IDE
 .vscode/
@@ -23,6 +25,8 @@ Thumbs.db
 
 # Sensitive lead/state data
 data/leads*.csv
+data/handoff*.csv
+data/display_name_human_review.csv
 data/submission_ledger.csv
 data/state.json
 data/staff_actions_*.csv
