@@ -27,7 +27,7 @@ from playwright.async_api import Page, async_playwright
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.form_detector import FormDetector
+from src.form_detector import FormDetector, detect_sales_prohibited_text
 from src.message_generator import MessageGenerator
 from src.safety import detect_bot_protection, detect_hard_site
 
@@ -603,6 +603,12 @@ async def _run_prefill(args: argparse.Namespace) -> PrefillResult:
                     if detect_bot_protection(page_text, status_code) or await detector.detect_captcha():
                         result.status = "skipped_bot_protection"
                         result.reason = "bot_protection"
+                        result.stopped_at = "before_fill"
+                        result.stop_state = "unknown"
+                        result.final_step_url = page.url
+                    elif detect_sales_prohibited_text(page_text):
+                        result.status = "skipped"
+                        result.reason = "sales_prohibited"
                         result.stopped_at = "before_fill"
                         result.stop_state = "unknown"
                         result.final_step_url = page.url

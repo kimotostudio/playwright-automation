@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from html.parser import HTMLParser
 from datetime import datetime
 from typing import Dict, List, Optional, Sequence, Tuple
 from urllib.parse import urljoin, urlparse
@@ -112,6 +113,187 @@ EXTERNAL_FORM_DISCOVERY_HINTS = [
     "typeform",
 ]
 
+CONFIRM_BUTTON_TEXTS = [
+    "確認",
+    "確認画面へ",
+    "内容確認",
+    "内容を確認",
+    "確認する",
+    "Confirm",
+    "Next",
+    "次へ",
+]
+
+FINAL_SUBMIT_TEXTS = [
+    "送信",
+    "送信する",
+    "送信内容を送信",
+    "確定",
+    "この内容で送信",
+    "Submit",
+    "Send",
+]
+
+CAPTCHA_TEXT_TOKENS = [
+    "captcha",
+    "recaptcha",
+    "hcaptcha",
+    "私はロボットではありません",
+    "ロボットではありません",
+]
+
+SALES_PROHIBITED_TOKENS = [
+    "営業お断り",
+    "営業目的",
+    "営業メール",
+    "営業行為",
+    "セールス禁止",
+    "セールスお断り",
+    "売り込み",
+    "勧誘お断り",
+    "sales prohibited",
+    "no sales",
+    "no solicitation",
+]
+
+
+def classify_submit_text(text: str) -> str:
+    """Classify visible button text without clicking anything."""
+    normalized = (text or "").strip().lower()
+    if not normalized:
+        return ""
+    if any(token.lower() in normalized for token in CONFIRM_BUTTON_TEXTS):
+        return "confirm"
+    if any(token.lower() in normalized for token in FINAL_SUBMIT_TEXTS):
+        return "submit"
+    return ""
+
+
+def detect_sales_prohibited_text(text: str) -> bool:
+    normalized = (text or "").lower()
+    return any(token.lower() in normalized for token in SALES_PROHIBITED_TOKENS)
+
+
+class _StaticFormHTMLParser(HTMLParser):
+    """Small local-only HTML analyzer used by unit tests and dry diagnostics."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.controls: List[Dict[str, str]] = []
+        self.labels_by_for: Dict[str, str] = {}
+        self.buttons: List[Dict[str, str]] = []
+        self.has_form = False
+        self.has_captcha = False
+        self._label_stack: List[Dict[str, object]] = []
+        self._button_stack: List[Dict[str, object]] = []
+        self._text_parts: List[str] = []
+
+    def handle_starttag(self, tag: str, attrs: List[Tuple[str, Optional[str]]]) -> None:
+        attrs_dict = {key.lower(): value or "" for key, value in attrs}
+        tag = tag.lower()
+        if tag == "form":
+            self.has_form = True
+        if tag == "label":
+            self._label_stack.append({"for": attrs_dict.get("for", ""), "text": [], "controls": []})
+        if tag == "button":
+            self._button_stack.append({"text": [], "attrs": attrs_dict})
+        if tag == "iframe":
+            haystack = " ".join(attrs_dict.values()).lower()
+            if any(token in haystack for token in ("captcha", "recaptcha", "hcaptcha")):
+                self.has_captcha = True
+        if tag in {"input", "textarea", "select"} or self._is_custom_textbox(attrs_dict):
+            control = self._control_meta(tag, attrs_dict)
+            self.controls.append(control)
+            if self._label_stack:
+                self._label_stack[-1]["controls"].append(len(self.controls) - 1)
+        if tag == "input" and attrs_dict.get("type", "").lower() in {"submit", "button"}:
+            self.buttons.append({"text": attrs_dict.get("value", "")})
+        text_haystack = " ".join(attrs_dict.values()).lower()
+        if any(token.lower() in text_haystack for token in CAPTCHA_TEXT_TOKENS):
+            self.has_captcha = True
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if tag == "label" and self._label_stack:
+            label = self._label_stack.pop()
+            text = " ".join(str(part).strip() for part in label["text"] if str(part).strip())
+            if label["for"]:
+                self.labels_by_for[str(label["for"])] = text
+            for control_index in label["controls"]:
+                self.controls[int(control_index)]["label"] = text
+        if tag == "button" and self._button_stack:
+            button = self._button_stack.pop()
+            text = " ".join(str(part).strip() for part in button["text"] if str(part).strip())
+            self.buttons.append({"text": text})
+
+    def handle_data(self, data: str) -> None:
+        self._text_parts.append(data)
+        if self._label_stack:
+            self._label_stack[-1]["text"].append(data)
+        if self._button_stack:
+            self._button_stack[-1]["text"].append(data)
+
+    @staticmethod
+    def _is_custom_textbox(attrs: Dict[str, str]) -> bool:
+        return attrs.get("contenteditable", "").lower() == "true" or attrs.get("role", "").lower() == "textbox"
+
+    @staticmethod
+    def _control_meta(tag: str, attrs: Dict[str, str]) -> Dict[str, str]:
+        return {
+            "tag": tag,
+            "type": attrs.get("type", ""),
+            "name": attrs.get("name", ""),
+            "id": attrs.get("id", ""),
+            "placeholder": attrs.get("placeholder", ""),
+            "aria_label": attrs.get("aria-label", ""),
+            "role": attrs.get("role", ""),
+            "contenteditable": attrs.get("contenteditable", ""),
+            "label": "",
+        }
+
+    def text(self) -> str:
+        return " ".join(part.strip() for part in self._text_parts if part.strip())
+
+
+def analyze_static_form_html(html: str) -> Dict[str, object]:
+    """Analyze local mock HTML without Playwright or network access."""
+    parser = _StaticFormHTMLParser()
+    parser.feed(html or "")
+    for control in parser.controls:
+        control_id = control.get("id", "")
+        if control_id and not control.get("label"):
+            control["label"] = parser.labels_by_for.get(control_id, "")
+
+    field_counts: Dict[str, int] = {}
+    for control in parser.controls:
+        field_type = FormDetector._classify_control(control)
+        if field_type and field_type != "unknown":
+            field_counts[field_type] = field_counts.get(field_type, 0) + 1
+
+    confirm_count = 0
+    submit_count = 0
+    for button in parser.buttons:
+        kind = classify_submit_text(button.get("text", ""))
+        if kind == "confirm":
+            confirm_count += 1
+        elif kind == "submit":
+            submit_count += 1
+
+    page_text = parser.text()
+    has_captcha = parser.has_captcha or any(
+        token.lower() in page_text.lower() for token in CAPTCHA_TEXT_TOKENS
+    )
+    return {
+        "has_form": parser.has_form,
+        "fields": field_counts,
+        "field_types": sorted(field_counts),
+        "confirm_button_count": confirm_count,
+        "final_submit_button_count": submit_count,
+        "has_captcha": has_captcha,
+        "sales_prohibited": detect_sales_prohibited_text(page_text),
+    }
+
+
 # Public placeholder fallback policy. Real sender details belong only in the
 # ignored local config/sender_info.json file.
 DISPLAY_NAME = "担当者"
@@ -188,12 +370,12 @@ FIELD_PATTERNS = {
     "phone": {
         "labels": ["電話", "TEL", "tel", "携帯", "連絡先", "電話番号", "Phone", "Phone Number"],
         "attributes": ["tel", "phone", "telephone", "your-tel", "your_phone", "mobile", "phone-number"],
-        "placeholders": ["電話番号", "090-1234-5678", "TEL", "携帯"],
+        "placeholders": ["電話番号", "090-1234-5678", "TEL", "携帯", "Phone", "Phone Number"],
     },
     "subject": {
-        "labels": ["件名", "タイトル", "subject", "Subject", "お問い合わせ種別"],
-        "attributes": ["subject", "your-subject", "title"],
-        "placeholders": ["件名", "Subject"],
+        "labels": ["件名", "タイトル", "subject", "Subject", "お問い合わせ種別", "Inquiry Type", "Category"],
+        "attributes": ["subject", "your-subject", "title", "category", "inquiry-type"],
+        "placeholders": ["件名", "Subject", "Category"],
     },
     "message": {
         "labels": [
@@ -211,8 +393,8 @@ FIELD_PATTERNS = {
             "Message",
             "Comments",
         ],
-        "attributes": ["message", "your-message", "content", "body", "inquiry", "your_message", "comment", "comments", "description"],
-        "placeholders": ["お問い合わせ内容", "問い合わせ内容", "ご相談内容", "メッセージ", "本文", "Message", "Comments"],
+        "attributes": ["message", "your-message", "content", "body", "inquiry", "your_message", "comment", "comments", "description", "question"],
+        "placeholders": ["お問い合わせ内容", "問い合わせ内容", "ご相談内容", "メッセージ", "本文", "Message", "Comments", "Question"],
     },
     "company": {
         "labels": ["会社名", "屋号", "企業名", "organization", "company", "法人名"],
@@ -270,11 +452,17 @@ class FormDetector:
             return "email"
         if any(token in full_text for token in ["電話", "tel", "携帯", "連絡先"]) or "phone" in text_lower:
             return "phone"
-        if any(token in full_text for token in ["会社", "屋号", "法人", "company", "organization"]):
+        if any(token in full_text for token in ["会社", "屋号", "法人"]) or any(
+            token in text_lower for token in ["company", "organization", "corporation"]
+        ):
             return "company"
-        if any(token in full_text for token in ["件名", "subject", "お問い合わせ種別"]):
+        if any(token in full_text for token in ["件名", "お問い合わせ種別"]) or any(
+            token in text_lower for token in ["subject", "inquiry type", "category", "title"]
+        ):
             return "subject"
-        if any(token in full_text for token in ["内容", "本文", "メッセージ", "問い合わせ内容", "message"]):
+        if any(token in full_text for token in ["内容", "本文", "メッセージ", "問い合わせ内容", "お問い合わせ内容"]) or any(
+            token in text_lower for token in ["message", "comments", "comment", "question", "inquiry"]
+        ):
             return "message"
 
         kana_hit = any(token in full_text for token in ["フリガナ", "ふりがな", "カナ", "セイ", "メイ"])
@@ -285,11 +473,15 @@ class FormDetector:
         if kana_hit:
             return "furigana"
 
-        if any(token in full_text for token in ["姓", "氏", "苗字", "last", "family", "surname"]):
+        if any(token in full_text for token in ["氏名", "お名前", "名前"]) or "full name" in text_lower:
+            return "name"
+        if any(token in full_text for token in ["姓", "氏", "苗字"]) or any(
+            token in text_lower for token in ["last", "family", "surname"]
+        ):
             return "name_sei"
-        if any(token in full_text for token in ["名", "first", "given"]) and not kana_hit:
+        if (any(token in full_text for token in ["名"]) or any(token in text_lower for token in ["first", "given"])) and not kana_hit:
             return "name_mei"
-        if any(token in full_text for token in ["氏名", "お名前", "名前", "name"]):
+        if "name" in text_lower:
             return "name"
 
         if str(meta.get("type", "")).lower() == "date" or any(token in full_text for token in ["日付", "date", "希望日"]):
@@ -333,7 +525,9 @@ class FormDetector:
                 const hit = (labelText || '');
                 return /必須|\\*|＊|Required|required/.test(hit);
               };
-              const nodes = Array.from(document.querySelectorAll('input, textarea, select')).filter(isVisible);
+              const nodes = Array.from(
+                document.querySelectorAll('input, textarea, select, [contenteditable="true"], [role="textbox"]')
+              ).filter(isVisible);
               return nodes.map((el, idx) => {
                 const tag = (el.tagName || '').toLowerCase();
                 const type = ((el.getAttribute('type') || '') + '').toLowerCase();
@@ -397,7 +591,7 @@ class FormDetector:
         try:
             if await self.page.locator("form").count() > 0:
                 return True
-            if await self.page.locator("textarea:visible").count() > 0:
+            if await self.page.locator("textarea:visible, [contenteditable='true']:visible, [role='textbox']:visible").count() > 0:
                 return True
             if await self.page.locator("input[type='email']:visible").count() > 0:
                 return True
@@ -416,7 +610,9 @@ class FormDetector:
                     () => {
                       const vh = window.innerHeight || 0;
                       const vw = window.innerWidth || 0;
-                      const nodes = Array.from(document.querySelectorAll('form, input, textarea'));
+                      const nodes = Array.from(
+                        document.querySelectorAll('form, input, textarea, [contenteditable="true"], [role="textbox"]')
+                      );
                       for (const el of nodes) {
                         const tag = (el.tagName || '').toLowerCase();
                         if (tag === 'input') {
@@ -809,10 +1005,13 @@ class FormDetector:
         meta = {
             "form_count": 0,
             "textarea_count": 0,
+            "contenteditable_count": 0,
+            "role_textbox_count": 0,
             "input_count": 0,
             "submit_like_button_count": 0,
             "password_count": 0,
             "iframe_form_count": 0,
+            "sales_prohibited": False,
             "evidence": "",
         }
         try:
@@ -822,11 +1021,13 @@ class FormDetector:
                   const passwordCount = document.querySelectorAll('input[type="password"]').length;
                   const formCount = document.querySelectorAll('form').length;
                   const textareaCount = document.querySelectorAll('textarea').length;
+                  const contenteditableCount = document.querySelectorAll('[contenteditable="true"]').length;
+                  const roleTextboxCount = document.querySelectorAll('[role="textbox"]').length;
                   const inputCount = Array.from(document.querySelectorAll('input'))
                     .filter(el => ((el.getAttribute('type') || 'text') + '').toLowerCase() !== 'hidden')
                     .length;
 
-                  const tokens = ['送信', '確認', 'submit', 'send', '次へ'];
+                  const tokens = ['送信', '確認', 'submit', 'send', 'confirm', 'next', '次へ'];
                   let submitLikeButtonCount = 0;
                   for (const el of document.querySelectorAll('button, input[type="submit"], input[type="button"]')) {
                     const text = ((el.innerText || el.value || '') + '').toLowerCase();
@@ -844,13 +1045,32 @@ class FormDetector:
                     }
                   }
 
+                  const bodyText = ((document.body && document.body.innerText) || '').toLowerCase();
+                  const salesTokens = [
+                    '営業お断り',
+                    '営業目的',
+                    '営業メール',
+                    '営業行為',
+                    'セールス禁止',
+                    'セールスお断り',
+                    '売り込み',
+                    '勧誘お断り',
+                    'sales prohibited',
+                    'no sales',
+                    'no solicitation'
+                  ];
+                  const salesProhibited = salesTokens.some(t => bodyText.includes(t.toLowerCase()));
+
                   return {
                     passwordCount,
                     formCount,
                     textareaCount,
+                    contenteditableCount,
+                    roleTextboxCount,
                     inputCount,
                     submitLikeButtonCount,
                     iframeFormCount,
+                    salesProhibited,
                   };
                 }
                 """
@@ -858,15 +1078,22 @@ class FormDetector:
             meta["password_count"] = int(counts.get("passwordCount", 0))
             meta["form_count"] = int(counts.get("formCount", 0))
             meta["textarea_count"] = int(counts.get("textareaCount", 0))
+            meta["contenteditable_count"] = int(counts.get("contenteditableCount", 0))
+            meta["role_textbox_count"] = int(counts.get("roleTextboxCount", 0))
             meta["input_count"] = int(counts.get("inputCount", 0))
             meta["submit_like_button_count"] = int(counts.get("submitLikeButtonCount", 0))
             meta["iframe_form_count"] = int(counts.get("iframeFormCount", 0))
+            meta["sales_prohibited"] = bool(counts.get("salesProhibited", False))
 
             evidence = []
             if meta["form_count"] > 0:
                 evidence.append("found=form tag")
             if meta["textarea_count"] > 0:
                 evidence.append("found=textarea")
+            if meta["contenteditable_count"] > 0:
+                evidence.append(f"found=contenteditable:{meta['contenteditable_count']}")
+            if meta["role_textbox_count"] > 0:
+                evidence.append(f"found=role_textbox:{meta['role_textbox_count']}")
             if meta["input_count"] >= 2:
                 evidence.append(f"found=inputs:{meta['input_count']}")
             if meta["submit_like_button_count"] > 0:
@@ -877,10 +1104,15 @@ class FormDetector:
             if meta["password_count"] > 0:
                 meta["evidence"] = "found=password_input"
                 return False, "login_form", meta
+            if meta["sales_prohibited"]:
+                meta["evidence"] = "found=sales_prohibited"
+                return False, "sales_prohibited", meta
 
             has_form_like = (
                 meta["form_count"] > 0
                 or meta["textarea_count"] > 0
+                or meta["contenteditable_count"] > 0
+                or meta["role_textbox_count"] > 0
                 or meta["input_count"] >= 2
                 or meta["submit_like_button_count"] > 0
                 or meta["iframe_form_count"] > 0
@@ -935,7 +1167,11 @@ class FormDetector:
         # Strategy 3: aria-label.
         for text in patterns.get("labels", []):
             escaped = self._escape_css_text(text)
-            selector = f"input[aria-label*='{escaped}'], textarea[aria-label*='{escaped}'], select[aria-label*='{escaped}']"
+            selector = (
+                f"input[aria-label*='{escaped}'], textarea[aria-label*='{escaped}'], "
+                f"select[aria-label*='{escaped}'], [contenteditable='true'][aria-label*='{escaped}'], "
+                f"[role='textbox'][aria-label*='{escaped}']"
+            )
             try:
                 loc = self.page.locator(selector)
                 if await self._is_fillable(loc):
@@ -968,7 +1204,10 @@ class FormDetector:
                         loc = self.page.locator(f"#{self._escape_css_text(target_id)}")
                         if await self._is_fillable(loc):
                             return loc.first, f"label-for:{escaped}->{target_id}"
-                    inner = label.locator("input:visible, textarea:visible, select:visible")
+                    inner = label.locator(
+                        "input:visible, textarea:visible, select:visible, "
+                        "[contenteditable='true']:visible, [role='textbox']:visible"
+                    )
                     if await self._is_fillable(inner):
                         return inner.first, f"label-inner:{escaped}"
             except Exception:
@@ -984,7 +1223,10 @@ class FormDetector:
                 count = await containers.count()
                 for i in range(min(count, 5)):
                     container = containers.nth(i)
-                    loc = container.locator("input:visible, textarea:visible, select:visible")
+                    loc = container.locator(
+                        "input:visible, textarea:visible, select:visible, "
+                        "[contenteditable='true']:visible, [role='textbox']:visible"
+                    )
                     if await self._is_fillable(loc):
                         return loc.first, f"nearby-text:{escaped}"
             except Exception:
@@ -1392,9 +1634,6 @@ class FormDetector:
         Returns:
             (locator, selector, is_confirm_step)
         """
-        confirm_texts = ["確認", "確認画面へ", "内容確認", "確認する"]
-        final_submit_texts = ["送信", "送信する", "送信内容を送信", "確定", "この内容で送信", "Submit"]
-
         def selectors_from_text(text: str) -> list[str]:
             escaped = self._escape_css_text(text)
             return [
@@ -1404,7 +1643,7 @@ class FormDetector:
                 f"a:has-text('{escaped}')",
             ]
 
-        for text in confirm_texts:
+        for text in CONFIRM_BUTTON_TEXTS:
             for selector in selectors_from_text(text):
                 try:
                     loc = self.page.locator(selector)
@@ -1414,7 +1653,7 @@ class FormDetector:
                 except Exception:
                     continue
 
-        for text in final_submit_texts:
+        for text in FINAL_SUBMIT_TEXTS:
             for selector in selectors_from_text(text):
                 try:
                     loc = self.page.locator(selector)
@@ -1432,11 +1671,11 @@ class FormDetector:
 
                 text = ""
                 try:
-                    text = ((await loc.first.inner_text()) or "").strip().lower()
+                    text = ((await loc.first.inner_text()) or "").strip()
                 except Exception:
-                    text = ((await loc.first.get_attribute("value")) or "").strip().lower()
+                    text = ((await loc.first.get_attribute("value")) or "").strip()
 
-                is_confirm = any(token in text for token in ["確認", "confirm"])
+                is_confirm = classify_submit_text(text) == "confirm"
                 logger.info("[FORM] fallback submit button found: %s", selector)
                 return loc.first, selector, is_confirm
             except Exception:
@@ -1464,9 +1703,15 @@ class FormDetector:
             "button:has-text('この内容で送信')",
             "button:has-text('送信内容を送信')",
             "button:has-text('確定')",
+            "button:has-text('Submit')",
+            "button:has-text('Send')",
             "input[type='submit'][value*='送信']",
             "input[type='submit'][value*='確定']",
+            "input[type='submit'][value*='Submit']",
+            "input[type='submit'][value*='Send']",
             "a:has-text('送信')",
+            "a:has-text('Submit')",
+            "a:has-text('Send')",
         ]
 
         for selector in final_submit_selectors:

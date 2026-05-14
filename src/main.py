@@ -28,9 +28,13 @@ sys.path.insert(0, PROJECT_ROOT)
 
 from src.blocklist import block_domain, ensure_blocklist_files, extract_domain, is_blocked, seed_blocklist_domains_from_csv
 try:
-    from src.form_detector import FormDetector
+    from src.form_detector import FormDetector, detect_sales_prohibited_text
 except ModuleNotFoundError:
     FormDetector = None
+
+    def detect_sales_prohibited_text(_text: str) -> bool:
+        return False
+
 from src.ledger import append_ledger as _append_ledger, ledger_has, read_ledger
 from src.message_generator import MessageGenerator
 from src.rate_limiter import RateLimiter
@@ -1402,6 +1406,26 @@ async def process_lead(
                     "final_step_url": page.url,
                     "status": "skipped",
                     "reason": "bot_protection",
+                },
+                path=LEDGER_PATH,
+            )
+            return result
+
+        if detect_sales_prohibited_text(page_text):
+            result["status"] = "skipped"
+            result["message"] = "sales_prohibited"
+            result["evidence"] = f"{detector.last_contact_evidence or ''}; sales_prohibited_text".strip("; ")
+            result["final_step_url"] = page.url
+            append_ledger(
+                {
+                    "run_mode": mode,
+                    "salon_id": lead_id,
+                    "salon_name": salon_name,
+                    "domain": domain,
+                    "contact_url": contact_url,
+                    "final_step_url": page.url,
+                    "status": "skipped",
+                    "reason": "sales_prohibited",
                 },
                 path=LEDGER_PATH,
             )

@@ -81,6 +81,7 @@ ADAPTED_FIELDNAMES = [
     "demo_url",
     "domain",
     "url_status",
+    "url_source",
     "demo_url_status",
     "name_confidence",
     "name_warning",
@@ -137,19 +138,19 @@ def normalize_web_url(value: str) -> str:
     return ""
 
 
-def resolve_target_url(row: dict) -> tuple[str, str, str]:
+def resolve_target_url(row: dict) -> tuple[str, str, str, str]:
     contact_raw = _pick(row, CONTACT_URL_ALIASES)
     website_raw = _pick(row, WEBSITE_URL_ALIASES)
     contact_url = normalize_web_url(contact_raw)
     website_url = normalize_web_url(website_raw)
 
     if contact_url:
-        return contact_url, contact_url, ""
+        return contact_url, contact_url, "", "contact_url"
     if website_url:
-        return website_url, "", ""
+        return website_url, "", "", "website_fallback"
     if contact_raw or website_raw:
-        return "", "", "invalid_url"
-    return "", "", "no_contact_url"
+        return "", "", "invalid_url", "invalid"
+    return "", "", "no_contact_url", "missing"
 
 
 def resolve_demo_url(row: dict, demo_url_base: str = "") -> tuple[str, str]:
@@ -166,7 +167,7 @@ def resolve_demo_url(row: dict, demo_url_base: str = "") -> tuple[str, str]:
 
 
 def _adapt_row(row: dict, row_number: int, demo_url_base: str = "") -> dict:
-    url, contact_url, url_status = resolve_target_url(row)
+    url, contact_url, url_status, url_source = resolve_target_url(row)
     demo_url, demo_url_status = resolve_demo_url(row, demo_url_base)
     return {
         "id": _pick(row, LEAD_ID_ALIASES),
@@ -177,6 +178,7 @@ def _adapt_row(row: dict, row_number: int, demo_url_base: str = "") -> dict:
         "demo_url": demo_url,
         "domain": _pick(row, ["domain", "original__domain"]) or extract_domain(url),
         "url_status": url_status,
+        "url_source": url_source,
         "demo_url_status": demo_url_status,
         "name_confidence": _pick(row, ["name_confidence"]),
         "name_warning": _pick(row, ["name_warning"]),
@@ -231,6 +233,21 @@ def _render_message(template_path: Path, subject_template: str, row: dict, sende
     subject = subject_template.format_map(values)
     body = text.format_map(values)
     return subject.strip(), body.strip()
+
+
+def _row_safe_for_one_lead_semi_auto(row: dict, require_http_demo_url: bool = False) -> tuple[bool, str]:
+    required = ["id", "display_name", "url", "demo_url", "domain"]
+    missing = [field for field in required if not str(row.get(field, "")).strip()]
+    if missing:
+        return False, f"missing_{'_'.join(missing)}"
+    if str(row.get("url_status", "")).strip() == "invalid_url":
+        return False, "invalid_url"
+    demo_url = str(row.get("demo_url", "")).strip()
+    if require_http_demo_url and not _is_http_url(demo_url):
+        return False, "demo_url_not_http"
+    if str(row.get("url_source", "")) == "website_fallback":
+        return True, "ready_with_website_fallback"
+    return True, "ready"
 
 
 def main() -> int:
@@ -313,6 +330,7 @@ def main() -> int:
     demo_built_from_base_count = 0
     usable_url_count = 0
     missing_contact_url_count = 0
+    website_fallback_count = 0
     invalid_url_count = 0
     ready_rows = 0
     uncertain_name_count = 0
@@ -336,6 +354,8 @@ def main() -> int:
             usable_url_count += 1
         if not str(row.get("contact_url", "")).strip():
             missing_contact_url_count += 1
+        if str(row.get("url_source", "")).strip() == "website_fallback":
+            website_fallback_count += 1
         if str(row.get("url_status", "")).strip() == "invalid_url":
             invalid_url_count += 1
         demo_url = str(row.get("demo_url", "")).strip()
@@ -359,13 +379,17 @@ def main() -> int:
     print(f"headers={','.join(headers)}")
     print(f"usable_url_count={usable_url_count}")
     print(f"missing_contact_url_count={missing_contact_url_count}")
+    print(f"website_fallback_rows={website_fallback_count}")
     print(f"invalid_url_count={invalid_url_count}")
+    print(f"missing_display_name_count={missing.get('display_name', 0)}")
+    print(f"missing_demo_url_count={missing.get('demo_url', 0)}")
     print(f"missing={dict(sorted(missing.items()))}")
     print(f"duplicate_ids={len(duplicate_ids)}")
     print(f"duplicate_domains={len(duplicate_domains)}")
     print(f"rows_ready_for_semi_auto={ready_rows}")
     print(f"demo_url_http={http_demo_count}")
     print(f"demo_url_local_or_relative={local_demo_count}")
+    print(f"non_https_demo_url_count={local_demo_count}")
     print(f"demo_url_built_from_base={demo_built_from_base_count}")
     print(f"uncertain_name_count={uncertain_name_count}")
     print(f"unknown_name_confidence_count={unknown_name_confidence_count}")
@@ -375,20 +399,51 @@ def main() -> int:
         print(f"demo_url_base={demo_url_base}")
     template_path = Path(args.message_template)
     has_name_placeholder, has_display_placeholder, has_demo_placeholder, template_status = _template_flags(template_path)
+    sender_info_present = bool(args.sender_info and Path(args.sender_info).exists())
+    sender_info = _load_sender_info(args.sender_info)
+    first = adapted_rows[0] if adapted_rows else {}
+    first_subject = ""
+    first_body = ""
+    render_error = ""
+    if first:
+        try:
+            first_subject, first_body = _render_message(template_path, args.subject_template, first, sender_info)
+            subject_render_status = "ok"
+            message_render_status = "ok"
+        except Exception as exc:
+            subject_render_status = "error"
+            message_render_status = "error"
+            render_error = type(exc).__name__
+    else:
+        subject_render_status = "skipped"
+        message_render_status = "skipped"
+
     print(f"message_template={template_path}")
     print(f"message_template_status={template_status}")
     print(f"template_has_salon_name_placeholder={has_name_placeholder}")
     print(f"template_has_display_name_placeholder={has_display_placeholder}")
     print(f"template_has_demo_url_placeholder={has_demo_placeholder}")
+    print(f"sender_info_present={sender_info_present}")
+    print(f"subject_render_status={subject_render_status}")
+    print(f"message_render_status={message_render_status}")
+    if render_error:
+        print(f"message_render_error={render_error}")
 
     if adapted_rows:
-        first = adapted_rows[0]
+        first_safe, first_safe_reason = _row_safe_for_one_lead_semi_auto(
+            first,
+            require_http_demo_url=bool(args.require_http_demo_url),
+        )
         print(
             "first_row="
             f"id={first.get('id', '')},"
             f"domain={first.get('domain', '')},"
+            f"selected_url={first.get('url', '')},"
+            f"url_source={first.get('url_source', '')},"
             f"demo_url={first.get('demo_url', '')}"
         )
+        print(f"first_row_safe_for_one_lead_semi_auto={first_safe}")
+        print(f"first_row_safe_reason={first_safe_reason}")
 
     if args.write_adapted:
         output_path = Path(args.write_adapted)
@@ -406,13 +461,31 @@ def main() -> int:
     if args.write_first_message:
         output_path = Path(args.write_first_message)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        sender_info = _load_sender_info(args.sender_info)
-        first = adapted_rows[0] if adapted_rows else {}
-        subject, body = _render_message(template_path, args.subject_template, first, sender_info)
-        output_path.write_text(f"Subject: {subject}\n\n{body}\n", encoding="utf-8")
-        print(f"first_message={output_path}")
-        print("message_render_status=ok")
+        if message_render_status == "ok":
+            output_path.write_text(
+                "\n".join(
+                    [
+                        f"Lead-ID: {first.get('id', '')}",
+                        f"Domain: {first.get('domain', '')}",
+                        f"Selected URL: {first.get('url', '')}",
+                        f"URL Source: {first.get('url_source', '')}",
+                        f"Demo URL: {first.get('demo_url', '')}",
+                        f"Subject: {first_subject}",
+                        "",
+                        first_body,
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            print(f"first_message={output_path}")
+        else:
+            print("first_message=skipped")
 
+    if message_render_status == "error":
+        print("status=not_ready")
+        print("reason=message_render_error")
+        return 1
     if missing.get("id") or missing.get("url") or missing.get("demo_url"):
         print("status=not_ready")
         return 1
