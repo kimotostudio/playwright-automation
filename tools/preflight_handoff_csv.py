@@ -229,7 +229,7 @@ def _render_message(template_path: Path, subject_template: str, row: dict, sende
         }
     )
     for key, value in sender_info.items():
-        values[str(key)] = str(value or "")
+        values.setdefault(str(key), str(value or ""))
     subject = subject_template.format_map(values)
     body = text.format_map(values)
     return subject.strip(), body.strip()

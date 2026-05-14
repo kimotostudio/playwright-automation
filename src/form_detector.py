@@ -438,6 +438,11 @@ class FormDetector:
         full_text = cls._combined_meta_text(meta)
         text_lower = full_text.lower()
 
+        if any(token in full_text for token in ["メール", "メールアドレス", "e-mail"]) or "email" in text_lower:
+            return "email"
+        if any(token in full_text for token in ["電話", "tel", "携帯", "連絡先"]) or "phone" in text_lower:
+            return "phone"
+
         if any(token in full_text for token in ADDRESS_KEYWORDS) or any(
             token in text_lower for token in ["zip", "postal", "prefecture", "address", "city", "street"]
         ):
@@ -448,10 +453,6 @@ class FormDetector:
         ):
             return "consent_checkbox"
 
-        if any(token in full_text for token in ["メール", "メールアドレス", "e-mail"]) or "email" in text_lower:
-            return "email"
-        if any(token in full_text for token in ["電話", "tel", "携帯", "連絡先"]) or "phone" in text_lower:
-            return "phone"
         if any(token in full_text for token in ["会社", "屋号", "法人"]) or any(
             token in text_lower for token in ["company", "organization", "corporation"]
         ):
@@ -926,6 +927,7 @@ class FormDetector:
         )
         fallback_url = None
         fallback_source = ""
+        base_normalized = base_url.rstrip("/")
         max_try = max(1, int(max_pages_to_try))
         pages_visited = 0
         for candidate, (priority, source) in ordered:
@@ -938,7 +940,9 @@ class FormDetector:
                 await self.dismiss_cookie_banners()
                 if not response or response.status >= 400:
                     continue
-                if fallback_url is None:
+                response_url = self.page.url
+                response_is_base = response_url.rstrip("/") == base_normalized
+                if fallback_url is None or (fallback_source == "base_url" and not response_is_base):
                     fallback_url = self.page.url
                     fallback_source = source
                 if await self._has_contact_form_in_first_viewport():
@@ -960,7 +964,7 @@ class FormDetector:
                     )
                     return self.page.url
                 logger.info(
-                    "[FORM] Candidate rejected (no form in first viewport): %s (source=%s)",
+                    "[FORM] Candidate rejected (no form-like controls): %s (source=%s)",
                     candidate,
                     source,
                 )

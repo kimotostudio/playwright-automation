@@ -564,6 +564,36 @@ async def count_unfilled_required_fields(page: Page) -> int:
         return 0
 
 
+async def collect_body_and_form_values(page: Page) -> str:
+    try:
+        return str(
+            await page.evaluate(
+                """
+                () => {
+                  const parts = [];
+                  if (document.body && document.body.innerText) {
+                    parts.push(document.body.innerText);
+                  }
+                  for (const el of Array.from(document.querySelectorAll('input, textarea, select'))) {
+                    const value = ((el.value || '') + '').trim();
+                    if (value) parts.push(value);
+                  }
+                  for (const el of Array.from(document.querySelectorAll('[contenteditable="true"], [role="textbox"]'))) {
+                    const text = ((el.innerText || el.textContent || '') + '').trim();
+                    if (text) parts.push(text);
+                  }
+                  return parts.join('\\n');
+                }
+                """
+            )
+        )
+    except Exception:
+        try:
+            return await page.inner_text("body")
+        except Exception:
+            return ""
+
+
 async def is_iframe_only_form(page: Page) -> bool:
     try:
         return bool(
@@ -1578,6 +1608,7 @@ async def process_lead(
         result["field_selector_map"] = json.dumps(form_map, ensure_ascii=False)
         result["form_root_selector"] = await _detect_form_root_selector(page, fields)
 
+        seq = 0
         if not fields:
             if await is_iframe_only_form(page):
                 no_field_reason = "iframe_only_form"
@@ -1585,10 +1616,21 @@ async def process_lead(
             else:
                 no_field_reason = "no_form_fields"
                 evidence = "no_form_found_but_collected_contact_candidates"
+            if settings.get("screenshot_enabled", True):
+                seq += 1
+                result["confirm_screenshot_path"] = await take_screenshot(
+                    page,
+                    lead_id,
+                    seq,
+                    no_field_reason,
+                    date_str,
+                )
             result["status"] = "prepared_review_needed"
             result["message"] = no_field_reason
             result["evidence"] = evidence
             result["final_step_url"] = page.url
+            result["stop_state"] = no_field_reason
+            result["validation_notes"] = no_field_reason
             append_ledger(
                 {
                     "run_mode": mode,
@@ -1609,7 +1651,6 @@ async def process_lead(
         required_inspection = await detector.inspect_required_fields()
         result["detected_required_fields"] = list(required_inspection.get("detected_required_fields", []))
 
-        seq = 0
         if settings.get("screenshot_enabled", True):
             seq += 1
             await take_screenshot(page, lead_id, seq, "before_fill", date_str)
@@ -1705,6 +1746,10 @@ async def process_lead(
         selected_dropdowns = await detector.handle_dropdowns(required_only=True)
         result["filled_fields"] = list(fill_stats.get("filled_fields", [])) + date_filled + checked_boxes + selected_dropdowns
 
+        if settings.get("screenshot_enabled", True):
+            seq += 1
+            await take_screenshot(page, lead_id, seq, "after_fill", date_str)
+
         validation = await detector.validate_form_without_submit()
         validation_errors = list(validation.get("validation_errors", []))
         fill_missing = list(fill_stats.get("missing_required_fields", []))
@@ -1749,6 +1794,8 @@ async def process_lead(
                 result["evidence"] = f"required_fields_unfilled_needs_review:{missing_required_count}_fields"
                 result["missing_required_fields"] = result.get("missing_required_fields", []) + [unfilled_reason]
                 result["final_step_url"] = page.url
+                result["stop_state"] = "unfilled_required_fields"
+                result["validation_notes"] = unfilled_reason
                 append_ledger(
                     {
                         "run_mode": mode,
@@ -1763,10 +1810,6 @@ async def process_lead(
                     path=LEDGER_PATH,
                 )
                 return result
-
-        if settings.get("screenshot_enabled", True):
-            seq += 1
-            await take_screenshot(page, lead_id, seq, "after_fill", date_str)
 
         submit_btn, submit_selector, is_confirm_step = await detector.find_submit_button()
         if not submit_btn:
@@ -1867,7 +1910,7 @@ async def process_lead(
                 else:
                     logger.info(f"[{lead_id}] SEMI_AUTO: stopped before submit")
 
-            confirm_text = await page.inner_text("body")
+            confirm_text = await collect_body_and_form_values(page)
             failed_fields = []
             for field_name, status_text in fill_stats.get("field_details", {}).items():
                 if str(status_text).startswith("failed:"):
