@@ -22,6 +22,7 @@ except ModuleNotFoundError:
 
 
 from src.form_detector import (  # noqa: E402
+    FormDetector,
     analyze_static_form_html,
     classify_submit_text,
     detect_sales_prohibited_text,
@@ -112,6 +113,16 @@ class StaticFormDetectorTests(unittest.TestCase):
         self.assertTrue(analysis["has_captcha"])
         self.assertTrue(analysis["sales_prohibited"])
         self.assertTrue(detect_sales_prohibited_text("No solicitation please"))
+
+    def test_google_translate_select_is_not_contact_field(self) -> None:
+        meta = {
+            "tag": "select",
+            "class": "goog-te-combo",
+            "aria_label": "言語翻訳ウィジェット",
+            "label": "カナ",
+        }
+        self.assertTrue(FormDetector._is_translation_widget_meta(meta))
+        self.assertEqual(FormDetector._classify_control(meta), "unknown")
 
 
 if __name__ == "__main__":

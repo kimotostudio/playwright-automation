@@ -244,6 +244,7 @@ class _StaticFormHTMLParser(HTMLParser):
             "type": attrs.get("type", ""),
             "name": attrs.get("name", ""),
             "id": attrs.get("id", ""),
+            "class": attrs.get("class", ""),
             "placeholder": attrs.get("placeholder", ""),
             "aria_label": attrs.get("aria-label", ""),
             "role": attrs.get("role", ""),
@@ -305,6 +306,16 @@ FURIGANA_MEI = "シャ"
 
 REQUIRED_MARKERS = ("必須", "*", "＊")
 REQUIRED_TEXT_MARKERS = ("必須", "*", "＊", "required", "Required")
+
+TRANSLATION_WIDGET_TOKENS = [
+    "goog-te-combo",
+    "google translate",
+    "google翻訳",
+    "言語翻訳",
+    "翻訳ウィジェット",
+    "language translation",
+    "language selector",
+]
 
 ADDRESS_KEYWORDS = [
     "郵便番号",
@@ -426,6 +437,7 @@ class FormDetector:
             str(meta.get("label", "")),
             str(meta.get("name", "")),
             str(meta.get("id", "")),
+            str(meta.get("class", "")),
             str(meta.get("placeholder", "")),
             str(meta.get("aria_label", "")),
             str(meta.get("type", "")),
@@ -433,8 +445,21 @@ class FormDetector:
         ]
         return " ".join(parts)
 
+    @staticmethod
+    def _is_translation_widget_meta(meta: dict) -> bool:
+        if str(meta.get("tag", "")).lower() != "select":
+            return False
+        haystack = " ".join(
+            str(meta.get(key, ""))
+            for key in ("name", "id", "class", "placeholder", "aria_label")
+        ).lower()
+        return any(token.lower() in haystack for token in TRANSLATION_WIDGET_TOKENS)
+
     @classmethod
     def _classify_control(cls, meta: dict) -> str:
+        if cls._is_translation_widget_meta(meta):
+            return "unknown"
+
         full_text = cls._combined_meta_text(meta)
         text_lower = full_text.lower()
 
@@ -580,6 +605,16 @@ class FormDetector:
             role = (await target.get_attribute("role") or "").lower()
             if tag not in {"input", "textarea", "select"} and not is_editable and role != "textbox":
                 return False
+            meta = {
+                "tag": tag,
+                "name": await target.get_attribute("name") or "",
+                "id": await target.get_attribute("id") or "",
+                "class": await target.get_attribute("class") or "",
+                "placeholder": await target.get_attribute("placeholder") or "",
+                "aria_label": await target.get_attribute("aria-label") or "",
+            }
+            if self._is_translation_widget_meta(meta):
+                return False
             if tag == "input":
                 input_type = ((await target.get_attribute("type")) or "text").lower()
                 if input_type in {"hidden", "submit", "button", "image", "reset", "file", "radio", "checkbox"}:
@@ -587,6 +622,17 @@ class FormDetector:
             return True
         except Exception:
             return False
+
+    async def _first_fillable(self, locator: Locator, limit: int = 8) -> Optional[Locator]:
+        try:
+            count = await locator.count()
+            for i in range(min(count, limit)):
+                candidate = locator.nth(i)
+                if await self._is_fillable(candidate):
+                    return candidate
+        except Exception:
+            return None
+        return None
 
     async def _has_contact_form(self) -> bool:
         try:
@@ -1212,8 +1258,9 @@ class FormDetector:
                         "input:visible, textarea:visible, select:visible, "
                         "[contenteditable='true']:visible, [role='textbox']:visible"
                     )
-                    if await self._is_fillable(inner):
-                        return inner.first, f"label-inner:{escaped}"
+                    fillable = await self._first_fillable(inner)
+                    if fillable:
+                        return fillable, f"label-inner:{escaped}"
             except Exception:
                 continue
 
@@ -1231,8 +1278,9 @@ class FormDetector:
                         "input:visible, textarea:visible, select:visible, "
                         "[contenteditable='true']:visible, [role='textbox']:visible"
                     )
-                    if await self._is_fillable(loc):
-                        return loc.first, f"nearby-text:{escaped}"
+                    fillable = await self._first_fillable(loc)
+                    if fillable:
+                        return fillable, f"nearby-text:{escaped}"
             except Exception:
                 continue
 
@@ -1372,15 +1420,15 @@ class FormDetector:
                 continue
 
             try:
-                await locator.click()
-                await asyncio.sleep(0.1)
                 tag_name = await locator.evaluate("el => el.tagName.toLowerCase()")
                 if tag_name == "select":
                     # Select is handled in dropdown phase for required/safe defaults.
                     stats["skipped_optional"] += 1
                     stats["field_details"][field_type] = "skipped_select_handled_later"
                     continue
-                await locator.fill(value)
+                await locator.click(timeout=3000)
+                await asyncio.sleep(0.1)
+                await locator.fill(value, timeout=5000)
                 await asyncio.sleep(0.1)
                 stats["filled"] += 1
                 stats["filled_fields"].append(field_type)
@@ -1459,6 +1507,16 @@ class FormDetector:
             count = await selects.count()
             for i in range(count):
                 select = selects.nth(i)
+                meta = {
+                    "tag": "select",
+                    "name": await select.get_attribute("name") or "",
+                    "id": await select.get_attribute("id") or "",
+                    "class": await select.get_attribute("class") or "",
+                    "placeholder": await select.get_attribute("placeholder") or "",
+                    "aria_label": await select.get_attribute("aria-label") or "",
+                }
+                if self._is_translation_widget_meta(meta):
+                    continue
                 if required_only and not await self._is_required(select):
                     continue
                 try:
