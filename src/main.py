@@ -1255,6 +1255,15 @@ async def process_lead(
             result["evidence"] = f"timeout_during_contact_exploration_after_{max_contact_page_seconds}s;pages_visited={pages_visited};candidates={candidates_found}"
             result["contact_url"] = base_url
             result["final_step_url"] = base_url
+            if settings.get("screenshot_enabled", True):
+                with suppress(Exception):
+                    result["confirm_screenshot_path"] = await take_screenshot(
+                        page,
+                        lead_id,
+                        1,
+                        "timeout_contact",
+                        date_str,
+                    )
             append_ledger(
                 {
                     "run_mode": mode,
@@ -1337,6 +1346,15 @@ async def process_lead(
             result["message"] = "timeout_contact"
             result["evidence"] = f"timeout_loading_contact_page:{contact_url}"
             result["final_step_url"] = contact_url
+            if settings.get("screenshot_enabled", True):
+                with suppress(Exception):
+                    result["confirm_screenshot_path"] = await take_screenshot(
+                        page,
+                        lead_id,
+                        1,
+                        "timeout_contact",
+                        date_str,
+                    )
             append_ledger(
                 {
                     "run_mode": mode,

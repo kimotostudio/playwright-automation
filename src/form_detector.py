@@ -384,9 +384,9 @@ FIELD_PATTERNS = {
         "placeholders": ["電話番号", "090-1234-5678", "TEL", "携帯", "Phone", "Phone Number"],
     },
     "subject": {
-        "labels": ["件名", "タイトル", "subject", "Subject", "お問い合わせ種別", "Inquiry Type", "Category"],
-        "attributes": ["subject", "your-subject", "title", "category", "inquiry-type"],
-        "placeholders": ["件名", "Subject", "Category"],
+        "labels": ["件名", "題名", "タイトル", "subject", "Subject", "Title", "title"],
+        "attributes": ["subject", "your-subject", "title"],
+        "placeholders": ["件名", "題名", "タイトル", "Subject", "Title"],
     },
     "message": {
         "labels": [
@@ -430,6 +430,28 @@ class FormDetector:
     @staticmethod
     def _escape_css_text(text: str) -> str:
         return str(text).replace("\\", "\\\\").replace("'", "\\'")
+
+    @staticmethod
+    def _base_url_candidate_priority(base_url: str) -> tuple[int, str]:
+        parsed = urlparse(str(base_url or ""))
+        fragment = (parsed.fragment or "").strip().lower()
+        url_text = str(base_url or "").lower()
+        contact_tokens = [
+            "contact",
+            "inquiry",
+            "form",
+            "reserve",
+            "reservation",
+            "booking",
+            "toiawase",
+            "otoiawase",
+            "お問い合わせ",
+            "お問合せ",
+            "予約",
+        ]
+        if fragment.startswith("toc") and not any(token in url_text for token in contact_tokens):
+            return 75, "base_url_low_value_anchor"
+        return 5, "base_url"
 
     @staticmethod
     def _combined_meta_text(meta: dict) -> str:
@@ -482,8 +504,8 @@ class FormDetector:
             token in text_lower for token in ["company", "organization", "corporation"]
         ):
             return "company"
-        if any(token in full_text for token in ["件名", "お問い合わせ種別"]) or any(
-            token in text_lower for token in ["subject", "inquiry type", "category", "title"]
+        if any(token in full_text for token in ["件名", "題名", "タイトル"]) or any(
+            token in text_lower for token in ["subject", "title"]
         ):
             return "subject"
         if any(token in full_text for token in ["内容", "本文", "メッセージ", "問い合わせ内容", "お問い合わせ内容"]) or any(
@@ -850,8 +872,9 @@ class FormDetector:
             if current is None or priority < current[0]:
                 candidates[normalized] = (priority, source)
 
-        # Strategy 0: current URL candidate first.
-        add_candidate(base_url, 5, "base_url")
+        # Strategy 0: current URL candidate first, except low-value TOC anchors.
+        base_priority, base_source = self._base_url_candidate_priority(base_url)
+        add_candidate(base_url, base_priority, base_source)
 
         # Strategy 1: explicit path priority + sitemap.
         for i, path in enumerate(PRIORITY_CONTACT_PATHS):
@@ -1359,7 +1382,7 @@ class FormDetector:
             if is_req:
                 stats["detected_required_fields"].append(field_type)
 
-        high_conf_fields = {"email", "phone", "message", "company"}
+        high_conf_fields = {"email", "phone", "subject", "message", "company"}
         has_split_name = ("name_sei" in fields) and ("name_mei" in fields)
 
         sender_display_name = str(self.sender_info.get("display_name") or self.sender_info.get("name") or DISPLAY_NAME).strip()

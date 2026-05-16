@@ -27,6 +27,7 @@ RESULTS_DIR = PROJECT_ROOT / "results"
 SCREENSHOTS_DIR = PROJECT_ROOT / "screenshots"
 LOGS_DIR = RESULTS_DIR / "logs"
 LEDGER_PATH = PROJECT_ROOT / "data" / "submission_ledger.csv"
+BLOCKLIST_PATH = PROJECT_ROOT / "data" / "blocklist_domains.txt"
 SETTINGS_PATH = PROJECT_ROOT / "config" / "settings.json"
 SENDER_INFO_PATH = PROJECT_ROOT / "config" / "sender_info.json"
 
@@ -467,6 +468,17 @@ def _load_settings_skip_domains() -> set[str]:
     return {_normalize_domain(str(value)) for value in values if str(value).strip()}
 
 
+def _load_blocklist_domains() -> set[str]:
+    if not BLOCKLIST_PATH.exists():
+        return set()
+    domains: set[str] = set()
+    for line in BLOCKLIST_PATH.read_text(encoding="utf-8-sig", errors="replace").splitlines():
+        value = line.split("#", 1)[0].strip()
+        if value:
+            domains.add(_normalize_domain(value))
+    return {domain for domain in domains if domain}
+
+
 def _select_candidates(
     rows: list[dict[str, str]],
     limit: int,
@@ -484,6 +496,7 @@ def _select_candidates(
     skipped: Counter[str] = Counter()
     ledger_ids, ledger_domains = _read_ledger_keys(LEDGER_PATH)
     settings_skip_domains = _load_settings_skip_domains() if avoid_settings_skip_domains else set()
+    blocklist_domains = _load_blocklist_domains()
     domain_counts = Counter(_domain_from_row(row) for row in rows)
     min_name_rank = _name_confidence_rank(min_name_confidence)
 
@@ -495,6 +508,9 @@ def _select_candidates(
             continue
         if _domain_matches(candidate.domain, exclude_domains):
             skipped["excluded_domain_arg"] += 1
+            continue
+        if _domain_matches(candidate.domain, blocklist_domains):
+            skipped["blocklist_domain"] += 1
             continue
         if avoid_settings_skip_domains and _domain_matches(candidate.domain, settings_skip_domains):
             skipped["settings_skip_domain"] += 1

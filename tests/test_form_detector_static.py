@@ -81,6 +81,30 @@ class StaticFormDetectorTests(unittest.TestCase):
         self.assert_has_fields(html, "name", "email", "phone", "subject", "message")
         self.assertEqual(analysis["confirm_button_count"], 1)
 
+    def test_subject_title_field_aliases_are_confident_subjects(self) -> None:
+        cases = [
+            ("件名", {"label": "件名", "tag": "input"}),
+            ("題名", {"label": "題名", "tag": "input"}),
+            ("subject", {"name": "subject", "tag": "input"}),
+            ("title", {"name": "title", "tag": "input"}),
+        ]
+        for label, meta in cases:
+            with self.subTest(label=label):
+                self.assertEqual(FormDetector._classify_control(meta), "subject")
+
+    def test_inquiry_type_is_not_subject_body_text(self) -> None:
+        meta = {"label": "お問い合わせ種別", "name": "category", "tag": "input"}
+        self.assertNotEqual(FormDetector._classify_control(meta), "subject")
+
+    def test_toc_anchor_base_url_is_low_priority_candidate(self) -> None:
+        priority, source = FormDetector._base_url_candidate_priority("https://example.com/#toc3")
+        self.assertGreater(priority, 10)
+        self.assertEqual(source, "base_url_low_value_anchor")
+
+        priority, source = FormDetector._base_url_candidate_priority("https://example.com/contact/#toc3")
+        self.assertEqual(priority, 5)
+        self.assertEqual(source, "base_url")
+
     def test_contenteditable_and_role_textbox_message_fields(self) -> None:
         html = """
         <form>
