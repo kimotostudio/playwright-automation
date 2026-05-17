@@ -48,6 +48,7 @@ def test_normalize_non_skip_reasons_to_prepared():
         "popup_or_download",
         "business_only_filter",
         "iframe_only_form",
+        "embedded_or_external_form",
         "no_submit_button",
         "robots_disallowed",
         "domain_attempt_limit",
@@ -116,6 +117,25 @@ def test_enrich_preserves_evidence():
     assert result["status"] == "prepared_review_needed"
     assert "evidence" in result
     assert result["evidence"]
+
+
+def test_enrich_preserves_detected_embedded_platform_and_last_action():
+    result = enrich_result_for_outputs({
+        "status": "prepared_review_needed",
+        "message": "iframe_only_form",
+        "evidence": "iframe_form_detected_needs_review:iframes=1; providers=reserva",
+        "decision": "prepared_needs_manual",
+        "missing_required_fields": [],
+        "any_missing_required_fields": [],
+        "url": "https://example.com",
+        "contact_url": "https://example.com/contact",
+        "final_step_url": "https://example.com/contact",
+        "detected_platform": "reserva",
+        "last_action": "manual_review_embedded_iframe_form",
+    })
+    assert result["status"] == "prepared_review_needed"
+    assert result["detected_platform"] == "reserva"
+    assert result["last_action"] == "manual_review_embedded_iframe_form"
 
 
 # ---------------------------------------------------------------------------

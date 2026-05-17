@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 
 try:
     from playwright.async_api import Locator, Page, async_playwright
-except ModuleNotFoundError:
+except (ImportError, ModuleNotFoundError):
     Locator = Any  # type: ignore[assignment]
     Page = Any  # type: ignore[assignment]
     async_playwright = None
@@ -271,7 +271,17 @@ def enrich_result_for_outputs(result: dict) -> dict:
         out["confidence_level"] = "low"
 
     stop_state_value = str(out.get("stop_state", "")).strip().lower()
-    if stop_state_value in {"confirmation", "submit_button", "form_filled", "unknown"}:
+    if stop_state_value in {
+        "confirmation",
+        "submit_button",
+        "form_filled",
+        "fill_incomplete",
+        "iframe_only_form",
+        "embedded_or_external_form",
+        "no_form_fields",
+        "unfilled_required_fields",
+        "unknown",
+    }:
         out["stop_state"] = stop_state_value
     elif normalized_status == "sent":
         out["stop_state"] = "unknown"
@@ -286,11 +296,13 @@ def enrich_result_for_outputs(result: dict) -> dict:
 
     out["missing_required_fields"] = missing_required
     out["missing_required_fields_json"] = json.dumps(missing_required, ensure_ascii=False)
-    out["detected_platform"] = _infer_platform_from_urls(
+    inferred_platform = _infer_platform_from_urls(
         str(out.get("url", "")),
         str(out.get("contact_url", "")),
         str(out.get("final_step_url", "")),
     )
+    detected_platform = str(out.get("detected_platform", "") or "").strip()
+    out["detected_platform"] = detected_platform if detected_platform and detected_platform != "unknown" else inferred_platform
     selector_map = out.get("field_selector_map", "")
     if isinstance(selector_map, dict):
         out["field_selector_map"] = json.dumps(selector_map, ensure_ascii=False)
@@ -611,6 +623,82 @@ async def is_iframe_only_form(page: Page) -> bool:
         return False
 
 
+def _compact_detail_map(details: dict, limit: int = 6) -> str:
+    parts = []
+    for key, value in list((details or {}).items())[:limit]:
+        key_s = str(key).strip()
+        value_s = str(value).strip()
+        if key_s and value_s:
+            parts.append(f"{key_s}={value_s[:80]}")
+    return "; ".join(parts)
+
+
+async def collect_no_field_form_context(page: Page) -> dict:
+    """Collect local DOM hints for pages that look like forms but expose no fillable fields."""
+    try:
+        return await page.evaluate(
+            """
+            () => {
+              const visible = (el) => {
+                if (!el) return false;
+                const style = window.getComputedStyle(el);
+                if (style.display === 'none' || style.visibility === 'hidden') return false;
+                const rect = el.getBoundingClientRect();
+                return rect.width > 0 && rect.height > 0;
+              };
+              const providerTokens = [
+                'google.com/forms',
+                'docs.google.com/forms',
+                'form.run',
+                'reserva',
+                'select-type',
+                'coubic',
+                'airreserve',
+                'tol-app',
+                'stores.jp',
+                'jotform',
+                'typeform'
+              ];
+              const iframeHints = Array.from(document.querySelectorAll('iframe'))
+                .map((el) => `${el.getAttribute('src') || ''} ${el.getAttribute('title') || ''}`.trim())
+                .filter(Boolean)
+                .slice(0, 5);
+              const linkHints = Array.from(document.querySelectorAll('a[href], button'))
+                .filter(visible)
+                .map((el) => `${el.getAttribute('href') || ''} ${el.innerText || el.value || ''}`.trim())
+                .filter(Boolean)
+                .filter((text) => /予約|お問い合わせ|問い合わせ|contact|reserve|booking|mail|メール|line/i.test(text))
+                .slice(0, 8);
+              const haystack = `${iframeHints.join(' ')} ${linkHints.join(' ')} ${document.body ? document.body.innerText : ''}`.toLowerCase();
+              const providers = providerTokens.filter((token) => haystack.includes(token));
+              const topControlCount = document.querySelectorAll('form, input, textarea, select, [contenteditable="true"], [role="textbox"]').length;
+              const iframeCount = document.querySelectorAll('iframe').length;
+              const evidence = [];
+              if (iframeCount > 0) evidence.push(`iframes=${iframeCount}`);
+              if (providers.length > 0) evidence.push(`providers=${providers.join('|')}`);
+              if (linkHints.length > 0) evidence.push(`contact_or_reservation_links=${linkHints.length}`);
+              return {
+                top_control_count: topControlCount,
+                iframe_count: iframeCount,
+                providers,
+                iframe_hints: iframeHints,
+                contact_or_reservation_links: linkHints,
+                evidence: evidence.join('; ') || 'no_fillable_controls_detected',
+              };
+            }
+            """
+        )
+    except Exception:
+        return {
+            "top_control_count": 0,
+            "iframe_count": 0,
+            "providers": [],
+            "iframe_hints": [],
+            "contact_or_reservation_links": [],
+            "evidence": "no_field_context_unavailable",
+        }
+
+
 def get_skip_reason(base_url: str, domain: str, settings: dict) -> Tuple[bool, str]:
     target_domain = (domain or extract_domain(base_url)).lower().strip()
     target_url = (base_url or "").lower().strip()
@@ -740,6 +828,7 @@ def _reason_ja(reason: str, status: str = "") -> str:
         "no_form_found": "フォームなし",
         "no_form_fields": "フォームなし",
         "iframe_only_form": "フォームなし（iframeのみ）",
+        "embedded_or_external_form": "埋め込み/外部フォーム",
         "no_submit_button": "送信ボタンなし",
         "no_final_submit_button": "最終送信ボタンなし",
         "timeout_contact": "問い合わせ探索タイムアウト",
@@ -843,6 +932,7 @@ def append_results(results: List[dict], date_str: str) -> str:
         "reopen_in_browser_url",
         "form_root_selector",
         "field_selector_map",
+        "last_action",
         "notes",
     ]
     fieldnames = list(default_fields)
@@ -1059,6 +1149,7 @@ async def process_lead(
         "stop_state": "unknown",
         "form_root_selector": "",
         "field_selector_map": "",
+        "last_action": "",
     }
 
     logger.info(f"[{lead_id}] start: {salon_name} ({base_url})")
@@ -1628,12 +1719,23 @@ async def process_lead(
 
         seq = 0
         if not fields:
+            no_field_context = await collect_no_field_form_context(page)
+            context_evidence = str(no_field_context.get("evidence", "")).strip()
+            providers = [str(item).strip() for item in no_field_context.get("providers", []) if str(item).strip()]
             if await is_iframe_only_form(page):
                 no_field_reason = "iframe_only_form"
-                evidence = "iframe_form_detected_needs_review"
+                evidence = f"iframe_form_detected_needs_review:{context_evidence}"
+                result["last_action"] = "manual_review_embedded_iframe_form"
+            elif no_field_context.get("contact_or_reservation_links"):
+                no_field_reason = "embedded_or_external_form"
+                evidence = f"contact_or_reservation_widget_needs_manual_review:{context_evidence}"
+                result["last_action"] = "manual_review_contact_or_reservation_widget"
             else:
                 no_field_reason = "no_form_fields"
-                evidence = "no_form_found_but_collected_contact_candidates"
+                evidence = f"no_form_found_but_collected_contact_candidates:{context_evidence}"
+                result["last_action"] = "manual_review_no_fillable_fields"
+            if providers:
+                result["detected_platform"] = re.sub(r"[^a-z0-9_]+", "_", providers[0].lower()).strip("_")
             if settings.get("screenshot_enabled", True):
                 seq += 1
                 result["confirm_screenshot_path"] = await take_screenshot(
@@ -1648,7 +1750,7 @@ async def process_lead(
             result["evidence"] = evidence
             result["final_step_url"] = page.url
             result["stop_state"] = no_field_reason
-            result["validation_notes"] = no_field_reason
+            result["validation_notes"] = f"{no_field_reason}; {context_evidence}" if context_evidence else no_field_reason
             append_ledger(
                 {
                     "run_mode": mode,
@@ -1740,10 +1842,20 @@ async def process_lead(
 
         if not fill_ok:
             fill_reason = f"fill_incomplete:{fill_stats['filled']}/{fill_stats['total_fields']}"
+            detail_text = _compact_detail_map(fill_stats.get("field_details", {}))
             result["status"] = "prepared_review_needed"
             result["message"] = fill_reason
-            result["evidence"] = f"required_fields_partially_filled:{fill_reason}"
+            result["evidence"] = f"required_fields_partially_filled:{fill_reason}; details={detail_text}"
+            result["detected_required_fields"] = list(fill_stats.get("detected_required_fields", []))
+            result["filled_fields"] = list(fill_stats.get("filled_fields", []))
+            result["missing_required_fields"] = list(fill_stats.get("missing_required_fields", []))
             result["final_step_url"] = page.url
+            result["stop_state"] = "fill_incomplete"
+            result["validation_notes"] = f"{fill_reason}; {detail_text}" if detail_text else fill_reason
+            if int(fill_stats.get("filled", 0) or 0) == 0 and int(fill_stats.get("failed", 0) or 0) == 0:
+                result["last_action"] = "manual_review_no_fillable_matching_fields"
+            else:
+                result["last_action"] = "manual_review_fill_incomplete"
             append_ledger(
                 {
                     "run_mode": mode,
@@ -2256,6 +2368,7 @@ async def run(settings_override: Optional[dict] = None) -> Dict:
                     "reopen_in_browser_url": result.get("reopen_in_browser_url", ""),
                     "form_root_selector": result.get("form_root_selector", ""),
                     "field_selector_map": result.get("field_selector_map", ""),
+                    "last_action": result.get("last_action", ""),
                     "notes": result.get("notes", ""),
                 }
             )
@@ -2302,6 +2415,7 @@ async def run(settings_override: Optional[dict] = None) -> Dict:
                         "reopen_in_browser_url": result.get("reopen_in_browser_url", ""),
                         "form_root_selector": result.get("form_root_selector", ""),
                         "field_selector_map": result.get("field_selector_map", ""),
+                        "last_action": result.get("last_action", ""),
                     },
                     results_dir=RESULTS_DIR,
                     date_str=date_str,

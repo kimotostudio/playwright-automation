@@ -96,6 +96,10 @@ class StaticFormDetectorTests(unittest.TestCase):
         meta = {"label": "お問い合わせ種別", "name": "category", "tag": "input"}
         self.assertNotEqual(FormDetector._classify_control(meta), "subject")
 
+    def test_inquiry_type_select_is_not_message_field(self) -> None:
+        meta = {"label": "お問い合わせの種類", "name": "kind", "tag": "select"}
+        self.assertEqual(FormDetector._classify_control(meta), "unknown")
+
     def test_toc_anchor_base_url_is_low_priority_candidate(self) -> None:
         priority, source = FormDetector._base_url_candidate_priority("https://example.com/#toc3")
         self.assertGreater(priority, 10)

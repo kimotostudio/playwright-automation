@@ -484,6 +484,12 @@ class FormDetector:
 
         full_text = cls._combined_meta_text(meta)
         text_lower = full_text.lower()
+        tag = str(meta.get("tag", "")).lower()
+        if tag == "select" and (
+            any(token in full_text for token in ["お問い合わせの種類", "お問い合わせ種別", "種別", "種類"])
+            or any(token in text_lower for token in ["category", "type"])
+        ):
+            return "unknown"
 
         if any(token in full_text for token in ["メール", "メールアドレス", "e-mail"]) or "email" in text_lower:
             return "email"
@@ -655,6 +661,131 @@ class FormDetector:
         except Exception:
             return None
         return None
+
+    @staticmethod
+    def _control_selector_for_field(field_type: str) -> str:
+        if field_type == "message":
+            return "textarea:visible, [contenteditable='true']:visible, [role='textbox']:visible"
+        if field_type in {"email", "phone", "name", "name_sei", "name_mei", "furigana", "furigana_sei", "furigana_mei", "subject", "company"}:
+            return "input:visible, textarea:visible, [contenteditable='true']:visible, [role='textbox']:visible"
+        return "input:visible, textarea:visible, [contenteditable='true']:visible, [role='textbox']:visible"
+
+    @staticmethod
+    def _label_text_matches_token(label_text: str, token: str, field_type: str) -> bool:
+        label = str(label_text or "").strip()
+        token = str(token or "").strip()
+        if not label or not token:
+            return False
+        if len(token) == 1:
+            if label != token and not label.startswith(token):
+                return False
+        elif token not in label:
+            return False
+        if field_type in {"name_sei", "name_mei"} and any(
+            mark in label for mark in ["フリガナ", "ふりがな", "カナ", "セイ", "メイ"]
+        ):
+            return False
+        if field_type.startswith("furigana") and not any(
+            mark in label for mark in ["フリガナ", "ふりがな", "カナ", "セイ", "メイ"]
+        ):
+            return False
+        return True
+
+    async def _find_nearby_text_control(self, field_type: str, text: str) -> Tuple[Optional[Locator], str]:
+        """Find the closest visible textual control after a specific label text node."""
+        try:
+            token = str(text or "").strip()
+            if not token:
+                return None, ""
+            selector = await self.page.evaluate(
+                """
+                ({ token, fieldType }) => {
+                  const isVisible = (el) => {
+                    if (!el) return false;
+                    const style = window.getComputedStyle(el);
+                    if (style.display === 'none' || style.visibility === 'hidden') return false;
+                    const rect = el.getBoundingClientRect();
+                    return rect.width > 0 && rect.height > 0;
+                  };
+                  const labelMatches = (label) => {
+                    label = (label || '').trim();
+                    if (!label || !token) return false;
+                    if (token.length === 1) {
+                      if (label !== token && !label.startsWith(token)) return false;
+                    } else if (!label.includes(token)) {
+                      return false;
+                    }
+                    if ((fieldType === 'name_sei' || fieldType === 'name_mei') && /フリガナ|ふりがな|カナ|セイ|メイ/.test(label)) {
+                      return false;
+                    }
+                    if (fieldType.startsWith('furigana') && !/フリガナ|ふりがな|カナ|セイ|メイ/.test(label)) {
+                      return false;
+                    }
+                    return true;
+                  };
+                  const isTextualControl = (el) => {
+                    const tag = (el.tagName || '').toLowerCase();
+                    const type = ((el.getAttribute('type') || 'text') + '').toLowerCase();
+                    if (tag === 'textarea') return true;
+                    if (el.getAttribute('contenteditable') === 'true') return true;
+                    if ((el.getAttribute('role') || '').toLowerCase() === 'textbox') return true;
+                    if (tag !== 'input') return false;
+                    return !['hidden', 'submit', 'button', 'image', 'reset', 'file', 'radio', 'checkbox'].includes(type);
+                  };
+                  const isCompatible = (el) => {
+                    const tag = (el.tagName || '').toLowerCase();
+                    if (fieldType === 'message') {
+                      return tag === 'textarea' || el.getAttribute('contenteditable') === 'true' || (el.getAttribute('role') || '').toLowerCase() === 'textbox';
+                    }
+                    return isTextualControl(el);
+                  };
+                  const labels = [];
+                  const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT);
+                  while (walker.nextNode()) {
+                    const node = walker.currentNode;
+                    const label = (node.nodeValue || '').replace(/\\s+/g, ' ').trim();
+                    if (!labelMatches(label)) continue;
+                    const parent = node.parentElement;
+                    if (!parent || !isVisible(parent)) continue;
+                    const rect = parent.getBoundingClientRect();
+                    labels.push({ el: parent, rect, text: label });
+                  }
+                  const controls = Array.from(document.querySelectorAll('input, textarea, [contenteditable="true"], [role="textbox"]'))
+                    .filter((el) => isVisible(el) && !el.disabled && isCompatible(el))
+                    .map((el, idx) => {
+                      if (!el.dataset.codexFieldProbe) {
+                        el.dataset.codexFieldProbe = `${Date.now()}-${idx}-${Math.random().toString(36).slice(2)}`;
+                      }
+                      return { el, rect: el.getBoundingClientRect(), probe: el.dataset.codexFieldProbe };
+                    });
+                  let best = null;
+                  for (const label of labels) {
+                    for (const control of controls) {
+                      const verticalGap = control.rect.top - label.rect.bottom;
+                      const sameLine = Math.abs(control.rect.top - label.rect.top) <= 28;
+                      if (verticalGap < -12 && !sameLine) continue;
+                      if (verticalGap > 220) continue;
+                      const horizontalGap = Math.max(0, control.rect.left - label.rect.right);
+                      const overlap = Math.max(0, Math.min(label.rect.right, control.rect.right) - Math.max(label.rect.left, control.rect.left));
+                      const score = Math.max(0, verticalGap) * 4 + horizontalGap - overlap * 0.25;
+                      if (!best || score < best.score) {
+                        best = { probe: control.probe, score };
+                      }
+                    }
+                  }
+                  return best ? `[data-codex-field-probe="${best.probe.replace(/"/g, '\\"')}"]` : '';
+                }
+                """,
+                {"token": token, "fieldType": field_type},
+            )
+            if not selector:
+                return None, ""
+            loc = self.page.locator(selector)
+            if await self._is_fillable(loc):
+                return loc.first, f"nearby-label:{token}"
+        except Exception:
+            return None, ""
+        return None, ""
 
     async def _has_contact_form(self) -> bool:
         try:
@@ -1277,18 +1408,28 @@ class FormDetector:
                         loc = self.page.locator(f"#{self._escape_css_text(target_id)}")
                         if await self._is_fillable(loc):
                             return loc.first, f"label-for:{escaped}->{target_id}"
-                    inner = label.locator(
-                        "input:visible, textarea:visible, select:visible, "
-                        "[contenteditable='true']:visible, [role='textbox']:visible"
-                    )
+                    inner = label.locator(self._control_selector_for_field(field_type))
                     fillable = await self._first_fillable(inner)
                     if fillable:
                         return fillable, f"label-inner:{escaped}"
             except Exception:
                 continue
 
-        # Strategy 5: nearby text in common containers.
+        # Strategy 5: closest visible textual control after a matching label text node.
         for text in patterns.get("labels", []):
+            try:
+                fillable, source = await self._find_nearby_text_control(field_type, text)
+                if fillable:
+                    return fillable, source
+            except Exception:
+                continue
+
+        # Strategy 6: nearby text in common containers. This is intentionally
+        # narrower than the label-text strategy so broad form wrappers do not
+        # map every field to the first dropdown in the form.
+        for text in patterns.get("labels", []):
+            if len(str(text).strip()) <= 1:
+                continue
             escaped = self._escape_css_text(text)
             try:
                 containers = self.page.locator(
@@ -1297,17 +1438,22 @@ class FormDetector:
                 count = await containers.count()
                 for i in range(min(count, 5)):
                     container = containers.nth(i)
-                    loc = container.locator(
-                        "input:visible, textarea:visible, select:visible, "
-                        "[contenteditable='true']:visible, [role='textbox']:visible"
-                    )
+                    try:
+                        text_content = (await container.inner_text()).strip()
+                        if not self._label_text_matches_token(text_content, text, field_type):
+                            continue
+                        if len(text_content) > max(80, len(str(text)) + 40):
+                            continue
+                    except Exception:
+                        pass
+                    loc = container.locator(self._control_selector_for_field(field_type))
                     fillable = await self._first_fillable(loc)
                     if fillable:
                         return fillable, f"nearby-text:{escaped}"
             except Exception:
                 continue
 
-        # Strategy 6: field type fallback.
+        # Strategy 7: field type fallback.
         fallback_map = {
             "message": "textarea:visible, [contenteditable='true']:visible, [role='textbox']:visible",
             "email": "input[type='email']:visible",
