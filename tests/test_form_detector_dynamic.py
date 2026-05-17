@@ -84,6 +84,71 @@ class DynamicFormDetectorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.page.locator("#phone").input_value(), "090-0000-0000")
         self.assertIn("local mock test", await self.page.locator("#body").input_value())
 
+    async def test_split_name_and_email_confirmation_are_filled(self) -> None:
+        await self.page.set_content(
+            """
+            <html><body>
+              <form name="form1">
+                <div class="row">
+                  <p>名前 <span>必須</span></p>
+                  <input id="field_4585177_sei" name="field_4585177_sei" type="text" required placeholder="姓">
+                  <input id="field_4585177_mei" name="field_4585177_mei" type="text" required placeholder="名">
+                </div>
+                <div class="row">
+                  <p>ふりがな <span>必須</span></p>
+                  <input id="kana" name="kana" type="text" required>
+                </div>
+                <div class="row">
+                  <label for="field_4585178">メールアドレス <span>必須</span></label>
+                  <input id="field_4585178" name="field_4585178" type="email" required>
+                </div>
+                <div class="row">
+                  <label for="field_4585178_confirm">メールアドレスの確認用 <span>必須</span></label>
+                  <input id="field_4585178_confirm" name="field_4585178_confirm" type="email" required>
+                </div>
+                <div class="row">
+                  <label for="phone">連絡先 <span>必須</span></label>
+                  <input id="phone" name="phone" type="tel" required placeholder="090-1234-5678">
+                </div>
+                <div class="row">
+                  <label for="question">ご質問 <span>必須</span></label>
+                  <textarea id="question" name="question" required></textarea>
+                </div>
+              </form>
+            </body></html>
+            """
+        )
+        detector = FormDetector(
+            self.page,
+            {
+                "display_name": "山田 太郎",
+                "surname": "山田",
+                "given_name": "太郎",
+                "furigana_sei": "ヤマダ",
+                "furigana_mei": "タロウ",
+                "email": "sender@example.com",
+                "phone": "090-0000-0000",
+            },
+        )
+
+        fields, form_map = await detector.detect_form_fields()
+        self.assertIn("email", fields)
+        self.assertIn("email_confirm", fields)
+        self.assertIn("name_sei", fields)
+        self.assertIn("name_mei", fields)
+
+        fill_ok, stats = await detector.fill_form(fields, "Hello from a local mock test", "Subject")
+
+        self.assertTrue(fill_ok, stats)
+        self.assertEqual(await self.page.locator("#field_4585177_sei").input_value(), "山田")
+        self.assertEqual(await self.page.locator("#field_4585177_mei").input_value(), "太郎")
+        self.assertEqual(await self.page.locator("#field_4585178").input_value(), "sender@example.com")
+        self.assertEqual(await self.page.locator("#field_4585178_confirm").input_value(), "sender@example.com")
+        self.assertIn("email_confirm", stats["filled_fields"])
+        self.assertNotIn("email_confirm", stats["missing_required_fields"])
+        if "name" in fields:
+            self.assertEqual(stats["field_details"]["name"], "skipped_generic_name_when_split_name_present")
+
     async def test_embedded_reservation_widget_context_is_reportable(self) -> None:
         await self.page.set_content(
             """

@@ -373,8 +373,21 @@ FIELD_PATTERNS = {
         "attributes": ["mei-kana", "first-kana", "given-kana", "kana_mei", "furigana_mei"],
         "placeholders": ["メイ", "名フリガナ"],
     },
+    "email_confirm": {
+        "labels": [
+            "メールアドレスの確認",
+            "メールアドレス確認",
+            "確認用メール",
+            "確認用",
+            "Confirm Email",
+            "Email confirmation",
+            "email confirmation",
+        ],
+        "attributes": ["email_confirm", "email-confirm", "mail_confirm", "mail-confirm", "email2", "mail2", "confirm"],
+        "placeholders": ["メールアドレスの確認", "確認用メール", "Confirm Email"],
+    },
     "email": {
-        "labels": ["メール", "メールアドレス", "メールアドレス（確認）", "E-mail", "e-mail", "Email", "email", "Mail Address"],
+        "labels": ["メール", "メールアドレス", "E-mail", "e-mail", "Email", "email", "Mail Address"],
         "attributes": ["email", "your-email", "mail", "e-mail", "your_email", "mailaddress", "mail-address"],
         "placeholders": ["メールアドレス", "example@example.com", "Email", "email", "mail@example.com"],
     },
@@ -1528,7 +1541,7 @@ class FormDetector:
             if is_req:
                 stats["detected_required_fields"].append(field_type)
 
-        high_conf_fields = {"email", "phone", "subject", "message", "company"}
+        high_conf_fields = {"email", "email_confirm", "phone", "subject", "message", "company"}
         has_split_name = ("name_sei" in fields) and ("name_mei" in fields)
 
         sender_display_name = str(self.sender_info.get("display_name") or self.sender_info.get("name") or DISPLAY_NAME).strip()
@@ -1561,6 +1574,7 @@ class FormDetector:
             "furigana_sei": sender_furigana_sei,
             "furigana_mei": sender_furigana_mei,
             "email": self.sender_info.get("email", ""),
+            "email_confirm": self.sender_info.get("email", ""),
             "phone": self.sender_info.get("phone", ""),
             "subject": subject,
             "message": message,
@@ -1568,6 +1582,10 @@ class FormDetector:
         }
 
         for field_type, locator in fields.items():
+            if field_type == "name" and has_split_name:
+                stats["skipped_optional"] += 1
+                stats["field_details"][field_type] = "skipped_generic_name_when_split_name_present"
+                continue
             value = field_values.get(field_type, "")
             if not value:
                 continue
