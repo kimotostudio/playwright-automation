@@ -741,6 +741,8 @@ def build_cli_overrides(args: argparse.Namespace) -> Dict[str, object]:
         overrides["semi_auto_prompt"] = not args.no_prompt
     if args.limit is not None:
         overrides["daily_limit"] = int(args.limit)
+    if getattr(args, "allow_repeat_prepared", False):
+        overrides["allow_repeat_prepared"] = True
     leads_path = args.leads or getattr(args, "input", None)
     if leads_path:
         overrides["leads_csv_path"] = str(leads_path)
@@ -2263,6 +2265,7 @@ async def run(settings_override: Optional[dict] = None) -> Dict:
     semi_auto_verify = bool(settings.get("semi_auto_verify", False))
     semi_auto_limit = int(settings.get("semi_auto_limit", 3))
     semi_auto_prompt = bool(settings.get("semi_auto_prompt", True))
+    allow_repeat_prepared = bool(settings.get("allow_repeat_prepared", False))
 
     if mode == "SEMI_AUTO" and semi_auto_verify:
         to_process = unprocessed[: min(rate_limiter.remaining(), max(1, semi_auto_limit))]
@@ -2296,7 +2299,7 @@ async def run(settings_override: Optional[dict] = None) -> Dict:
     headless = bool(settings.get("headless", headless_default))
 
     existing_prepared_ids = set()
-    if mode == "SEMI_AUTO":
+    if mode == "SEMI_AUTO" and not allow_repeat_prepared:
         today_queue = queue_path(date_str=date_str, results_dir=RESULTS_DIR)
         for row in read_queue(today_queue):
             rid = str(row.get("salon_id", "")).strip()
@@ -2419,6 +2422,7 @@ async def run(settings_override: Optional[dict] = None) -> Dict:
                     },
                     results_dir=RESULTS_DIR,
                     date_str=date_str,
+                    allow_duplicate=allow_repeat_prepared,
                 )
                 if not added:
                     logger.info(f"[{result['salon_id']}] review queue row already exists today")
@@ -2549,6 +2553,11 @@ def main() -> None:
     parser.add_argument("--limit", type=int, help="Override daily_limit for this run")
     parser.add_argument("--leads", help="Override leads CSV path for this run")
     parser.add_argument("--input", help="Alias for --leads; useful for pipeline handoff CSVs")
+    parser.add_argument(
+        "--allow-repeat-prepared",
+        action="store_true",
+        help="Allow an explicit one-row SEMI_AUTO retry even if the lead is already in today's review queue.",
+    )
     args = parser.parse_args()
 
     if args.report_only:

@@ -410,6 +410,18 @@ def _read_ledger_keys(path: Path) -> tuple[set[str], set[str]]:
     return ids, domains
 
 
+def _read_review_queue_ids(path: Path) -> set[str]:
+    ids: set[str] = set()
+    if not path.exists():
+        return ids
+    with path.open("r", encoding="utf-8-sig", newline="") as f:
+        for row in csv.DictReader(f):
+            lead_id = str(row.get("salon_id", "") or row.get("lead_id", "") or row.get("id", "")).strip()
+            if lead_id:
+                ids.add(lead_id)
+    return ids
+
+
 def _read_feedback_exclusions(path: Path) -> tuple[set[str], set[str], Counter[str]]:
     ids: set[str] = set()
     domains: set[str] = set()
@@ -484,6 +496,7 @@ def _select_candidates(
     limit: int,
     exclude_domains: set[str],
     include_ledger_domains: bool,
+    exclude_review_queue_ids: set[str],
     avoid_settings_skip_domains: bool,
     exclude_corporate: bool,
     exclude_line_domains: bool,
@@ -522,6 +535,9 @@ def _select_candidates(
             candidate.lead_id in ledger_ids or _domain_matches(candidate.domain, ledger_domains)
         ):
             skipped["already_in_ledger"] += 1
+            continue
+        if candidate.lead_id in exclude_review_queue_ids:
+            skipped["already_in_today_review_queue"] += 1
             continue
         if exclude_corporate and candidate.corporate_like:
             skipped["corporate_like"] += 1
@@ -913,6 +929,8 @@ def _write_summary(
         f"- feedback_csv: {selection_options.get('feedback_csv')}",
         f"- feedback_excluded_ids: {selection_options.get('feedback_excluded_ids')}",
         f"- feedback_excluded_domains: {selection_options.get('feedback_excluded_domains')}",
+        f"- include_today_review_queue: {selection_options.get('include_today_review_queue')}",
+        f"- today_review_queue_ids: {selection_options.get('today_review_queue_ids')}",
         "",
         "## Selection Skips",
         "",
@@ -1062,6 +1080,11 @@ def main() -> int:
         action="store_true",
         help="Allow domains listed in config/settings.json skip_domains.",
     )
+    parser.add_argument(
+        "--include-today-review-queue",
+        action="store_true",
+        help="Allow leads already present in today's review queue.",
+    )
     parser.add_argument("--no-notify", action="store_true", help="Do not attempt the optional Discord notification.")
     args = parser.parse_args()
 
@@ -1101,11 +1124,15 @@ def main() -> int:
         feedback_exclude_ids, feedback_exclude_domains, feedback_exclusion_reasons = _read_feedback_exclusions(
             feedback_path
         )
+    today_review_queue_ids = set()
+    if not args.include_today_review_queue:
+        today_review_queue_ids = _read_review_queue_ids(RESULTS_DIR / f"review_queue_{start_time.strftime('%Y%m%d')}.csv")
     selected, skipped = _select_candidates(
         rows=rows,
         limit=args.limit,
         exclude_domains={_normalize_domain(item) for item in args.exclude_domain},
         include_ledger_domains=bool(args.include_ledger_domains),
+        exclude_review_queue_ids=today_review_queue_ids,
         avoid_settings_skip_domains=not bool(args.include_settings_skip_domains),
         exclude_corporate=bool(args.exclude_corporate),
         exclude_line_domains=bool(args.exclude_line_domains),
@@ -1128,6 +1155,8 @@ def main() -> int:
         "feedback_csv": str(feedback_path) if args.exclude_feedback_bad or args.feedback_csv else "",
         "feedback_excluded_ids": len(feedback_exclude_ids),
         "feedback_excluded_domains": len(feedback_exclude_domains),
+        "include_today_review_queue": bool(args.include_today_review_queue),
+        "today_review_queue_ids": len(today_review_queue_ids),
     }
 
     if not selected:

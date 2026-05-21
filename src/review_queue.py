@@ -65,13 +65,18 @@ def _write_rows(path: str, rows: List[dict]) -> None:
     os.replace(tmp_path, path)
 
 
-def append_review_entry(entry: dict, results_dir: str = DEFAULT_RESULTS_DIR, date_str: Optional[str] = None) -> tuple[str, bool]:
-    """Append one queue entry, idempotent by salon_id per day."""
+def append_review_entry(
+    entry: dict,
+    results_dir: str = DEFAULT_RESULTS_DIR,
+    date_str: Optional[str] = None,
+    allow_duplicate: bool = False,
+) -> tuple[str, bool]:
+    """Append one queue entry, idempotent by salon_id per day unless explicitly allowed."""
     path = queue_path(date_str=date_str, results_dir=results_dir)
     rows = read_queue(path)
     salon_id = str(entry.get("salon_id", "")).strip()
 
-    if any(str(row.get("salon_id", "")).strip() == salon_id for row in rows):
+    if not allow_duplicate and any(str(row.get("salon_id", "")).strip() == salon_id for row in rows):
         return path, False
 
     normalized = {key: str(entry.get(key, "")).strip() for key in FIELDNAMES}
