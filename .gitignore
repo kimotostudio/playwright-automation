@@ -31,6 +31,10 @@ data/submission_ledger.csv
 data/state.json
 data/staff_actions_*.csv
 data/operator_actions_*.csv
+data/retry_*.csv
+data/recall_volume_*.csv
+data/*manual_review*.csv
+data/archive/
 data/domain_cooldowns.json
 data/blocklist_domains.txt
 data/blocklist_urls.txt
